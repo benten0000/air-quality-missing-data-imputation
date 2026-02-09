@@ -162,8 +162,6 @@ class DiffusionTransformerConfig:
     inference_nsample: int = 20
     inference_aggregate: Literal["median", "mean"] = "median"
     observed_loss_weight: float = 1.0
-    masked_huber_delta: float = 1.0
-    masked_robust_weight: float = 1.0
 
 
 class DiffusionTransformerImputer(nn.Module):
@@ -340,18 +338,10 @@ class DiffusionTransformerImputer(nn.Module):
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, enabled=amp_enabled):
                     pred_eps = self.forward(x_input, input_mask, t)
-                    masked_pred = pred_eps[mit_mask]
-                    masked_target = eps[mit_mask]
-                    mit_mae = torch.abs(masked_pred - masked_target).mean()
-                    mit_huber = F.huber_loss(masked_pred, masked_target, delta=self.config.masked_huber_delta)
-                    mit_loss = mit_mae + self.config.masked_robust_weight * mit_huber
+                    mit_loss = F.mse_loss(pred_eps[mit_mask], eps[mit_mask])
                     observed_mask = original_mask.bool() & ~mit_mask
                     if observed_mask.any() and self.config.observed_loss_weight > 0.0:
-                        obs_pred = pred_eps[observed_mask]
-                        obs_target = torch.zeros_like(obs_pred)
-                        obs_mae = torch.abs(obs_pred - obs_target).mean()
-                        obs_huber = F.huber_loss(obs_pred, obs_target, delta=self.config.masked_huber_delta)
-                        obs_loss = obs_mae + self.config.masked_robust_weight * obs_huber
+                        obs_loss = F.mse_loss(pred_eps[observed_mask], torch.zeros_like(pred_eps[observed_mask]))
                     else:
                         obs_loss = torch.tensor(0.0, device=device)
                     loss = mit_loss + self.config.observed_loss_weight * obs_loss

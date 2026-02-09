@@ -9,9 +9,12 @@ paths:
 
 experiment:
   stations: [E802]
-  models: [diffusion_transformer, classic_transformer]
+  models: [classic_transformer, saits]
   missing_rate: 0.20
   seed: 123
+  mask_mode: block
+  block_min_len: 2
+  block_max_len: 14
 
 hydra:
   run:

@@ -16,6 +16,7 @@ dependencies = [
   "omegaconf>=2.3",
   "torch",
   "joblib",
+  "pypots",
 ]
 
 [project.scripts]

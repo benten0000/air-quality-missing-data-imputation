@@ -8,6 +8,7 @@ from air_quality_imputer.models.diffusion_imputer import (
     DiffusionTransformerConfig,
     DiffusionTransformerImputer,
 )
+from air_quality_imputer.models.saits_imputer import SAITSConfig, SAITSImputer
 from air_quality_imputer.models.transformer_imputer import TransformerConfig, TransformerImputer
 
 
@@ -19,6 +20,10 @@ MODEL_REGISTRY = {
     "diffusion_transformer": {
         "config_cls": DiffusionTransformerConfig,
         "model_cls": DiffusionTransformerImputer,
+    },
+    "saits": {
+        "config_cls": SAITSConfig,
+        "model_cls": SAITSImputer,
     },
 }
 

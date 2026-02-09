@@ -21,5 +21,3 @@ params:
   inference_nsample: 5
   inference_aggregate: median
   observed_loss_weight: 1.0
-  masked_huber_delta: 1.0
-  masked_robust_weight: 1.0

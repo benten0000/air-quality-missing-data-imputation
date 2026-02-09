@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 from omegaconf import DictConfig
 
-from air_quality_imputer.training.data_utils import mask_windows
+from air_quality_imputer.training.data_utils import mask_windows, mask_windows_blocks
 from air_quality_imputer.training.model_registry import build_model_from_checkpoint, load_model_cfg_by_name
 
 
@@ -25,6 +25,9 @@ def evaluate_station(
     processed_dir: Path,
     missing_rate: float,
     seed: int,
+    mask_mode: str,
+    block_min_len: int,
+    block_max_len: int,
     device: torch.device,
 ) -> tuple[dict, list[dict]]:
     model_path = models_dir / model_type / station / checkpoint_name
@@ -49,7 +52,18 @@ def evaluate_station(
 
     windows = np.load(windows_path)
     X_test_ori = windows["X_test_ori"].astype(np.float32)
-    X_test_masked = mask_windows(X_test_ori, missing_rate=missing_rate, seed=seed)
+    if mask_mode == "block":
+        X_test_masked = mask_windows_blocks(
+            X_test_ori,
+            missing_rate=missing_rate,
+            seed=seed,
+            min_block_len=block_min_len,
+            max_block_len=block_max_len,
+        )
+    elif mask_mode == "random":
+        X_test_masked = mask_windows(X_test_ori, missing_rate=missing_rate, seed=seed)
+    else:
+        raise ValueError(f"Unsupported mask_mode: {mask_mode}")
 
     eval_mask = np.isnan(X_test_masked) & ~np.isnan(X_test_ori)
     if not eval_mask.any():
@@ -98,6 +112,9 @@ def run(cfg: DictConfig) -> None:
     model_cfgs = [load_model_cfg_by_name(name) for name in model_names]
     missing_rate = float(cfg.experiment.missing_rate)
     seed = int(cfg.experiment.seed)
+    mask_mode = str(cfg.experiment.mask_mode)
+    block_min_len = int(cfg.experiment.block_min_len)
+    block_max_len = int(cfg.experiment.block_max_len)
 
     for model_cfg in model_cfgs:
         model_type = str(model_cfg.type)
@@ -118,6 +135,9 @@ def run(cfg: DictConfig) -> None:
                     processed_dir=processed_dir,
                     missing_rate=missing_rate,
                     seed=seed,
+                    mask_mode=mask_mode,
+                    block_min_len=block_min_len,
+                    block_max_len=block_max_len,
                     device=device,
                 )
                 overall_rows.append(overall_row)

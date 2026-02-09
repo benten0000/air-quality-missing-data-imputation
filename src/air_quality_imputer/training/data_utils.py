@@ -30,6 +30,61 @@ def mask_windows(x: np.ndarray, missing_rate: float, seed: int) -> np.ndarray:
     return masked
 
 
+def mask_windows_blocks(
+    x: np.ndarray,
+    missing_rate: float,
+    seed: int,
+    min_block_len: int = 2,
+    max_block_len: int = 8,
+) -> np.ndarray:
+    if min_block_len <= 0 or max_block_len <= 0:
+        raise ValueError("Block lengths must be positive.")
+    if min_block_len > max_block_len:
+        raise ValueError("min_block_len must be <= max_block_len.")
+
+    rng = np.random.default_rng(seed)
+    masked = x.copy()
+    n_windows, window_size, n_features = masked.shape
+    target_missing = int(round(missing_rate * n_windows * window_size * n_features))
+    if target_missing <= 0:
+        return masked
+
+    mask = np.zeros_like(masked, dtype=bool)
+    n_masked = 0
+    max_trials = max(1000, target_missing * 20)
+    trials = 0
+
+    while n_masked < target_missing and trials < max_trials:
+        trials += 1
+        w = int(rng.integers(0, n_windows))
+        f = int(rng.integers(0, n_features))
+        block_len = int(rng.integers(min_block_len, max_block_len + 1))
+        start_max = max(1, window_size - block_len + 1)
+        start = int(rng.integers(0, start_max))
+        end = min(window_size, start + block_len)
+
+        available = np.flatnonzero(~mask[w, start:end, f])
+        if len(available) == 0:
+            continue
+        remaining = target_missing - n_masked
+        if remaining <= 0:
+            break
+        take = min(remaining, len(available))
+        chosen_local = rng.choice(available, size=take, replace=False)
+        mask[w, start:end, f][chosen_local] = True
+        n_masked += int(take)
+
+    if n_masked < target_missing:
+        remaining = target_missing - n_masked
+        flat = np.flatnonzero(~mask.reshape(-1))
+        if len(flat) > 0:
+            chosen = rng.choice(flat, size=min(remaining, len(flat)), replace=False)
+            mask.reshape(-1)[chosen] = True
+
+    masked[mask] = np.nan
+    return masked
+
+
 def prepare_station_datasets(
     station: str,
     data_dir: Path,
@@ -40,6 +95,9 @@ def prepare_station_datasets(
     step_size: int,
     missing_rate: float,
     seed: int,
+    mask_mode: str = "block",
+    block_min_len: int = 2,
+    block_max_len: int = 8,
 ):
     file_path = data_dir / f"{station}.csv"
     if not file_path.exists():
@@ -79,7 +137,18 @@ def prepare_station_datasets(
     X_train = create_sliding_windows(data_train_scaled, window_size=block_size, step_size=step_size)
     X_val_ori = create_sliding_windows(data_val_scaled, window_size=block_size, step_size=step_size)
     X_test_ori = create_sliding_windows(data_test_scaled, window_size=block_size, step_size=step_size)
-    X_val_masked = mask_windows(X_val_ori, missing_rate=missing_rate, seed=seed)
+    if mask_mode == "block":
+        X_val_masked = mask_windows_blocks(
+            X_val_ori,
+            missing_rate=missing_rate,
+            seed=seed,
+            min_block_len=block_min_len,
+            max_block_len=block_max_len,
+        )
+    elif mask_mode == "random":
+        X_val_masked = mask_windows(X_val_ori, missing_rate=missing_rate, seed=seed)
+    else:
+        raise ValueError(f"Unsupported mask_mode: {mask_mode}")
 
     np.savez_compressed(
         out_data_station / "windows.npz",

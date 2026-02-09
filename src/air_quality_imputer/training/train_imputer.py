@@ -36,6 +36,9 @@ def run(cfg: DictConfig) -> None:
                 step_size=int(cfg.experiment.step_size),
                 missing_rate=float(cfg.experiment.missing_rate),
                 seed=int(cfg.experiment.seed),
+                mask_mode=str(cfg.experiment.mask_mode),
+                block_min_len=int(cfg.experiment.block_min_len),
+                block_max_len=int(cfg.experiment.block_max_len),
             )
 
             dataset_train = {"X": datasets["X_train"]}

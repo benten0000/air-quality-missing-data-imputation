@@ -10,12 +10,15 @@ paths:
 
 experiment:
   stations: [E802]
-  models: [classic_transformer, diffusion_transformer]
+  models: [classic_transformer]
   features: [PM2.5]
   block_size: 24
   step_size: 1
   missing_rate: 0.20
   seed: 42
+  mask_mode: block
+  block_min_len: 2
+  block_max_len: 14
 
 training:
   epochs: 300
