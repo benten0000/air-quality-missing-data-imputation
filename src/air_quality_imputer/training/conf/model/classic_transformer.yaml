@@ -1,0 +1,8 @@
+type: classic_transformer
+checkpoint_name: transformer.pt
+params:
+  d_model: 128
+  n_layer: 3
+  n_head: 4
+  dropout: 0.1
+  bias: true

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local tooling
+.vscode/
+
+# Artifacts and experiment outputs
+artifacts/
+data/processed/
+reports/model_eval/
+*.log
+
+# Notebook and OS noise
+.ipynb_checkpoints/
+__MACOSX/
+.DS_Store

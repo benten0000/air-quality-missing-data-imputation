@@ -1,0 +1,19 @@
+defaults:
+  - model: diffusion_transformer
+  - _self_
+
+paths:
+  models_dir: artifacts/models
+  processed_dir: data/processed/splits
+  reports_dir: reports/model_eval
+
+experiment:
+  stations: [E802]
+  models: [diffusion_transformer, classic_transformer]
+  missing_rate: 0.20
+  seed: 123
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

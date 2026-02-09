@@ -1,0 +1,19 @@
+type: diffusion_transformer
+checkpoint_name: diffusion_transformer.pt
+params:
+  d_model: 128
+  n_layer: 3
+  n_head: 4
+  dropout: 0.1
+  bias: true
+  diffusion_steps: 50
+  beta_schedule: cosine
+  beta_start: 0.0001
+  beta_end: 0.02
+  train_mask_rate: 0.25
+  train_mask_rate_min: 0.1
+  train_mask_rate_max: 0.9
+  random_target_ratio: true
+  deterministic_sampling: true
+  inference_nsample: 20
+  inference_aggregate: median

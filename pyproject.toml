@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "air-quality-imputer"
+version = "0.1.0"
+description = "Air quality imputation experiments with transformer-based models"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "scikit-learn",
+  "hydra-core>=1.3",
+  "omegaconf>=2.3",
+  "torch",
+  "joblib",
+]
+
+[project.scripts]
+aqi-train = "air_quality_imputer.training.train_imputer:main"
+aqi-eval = "air_quality_imputer.training.evaluate_imputer:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["air_quality_imputer*"]

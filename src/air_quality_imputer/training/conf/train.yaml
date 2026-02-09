@@ -1,0 +1,29 @@
+defaults:
+  - model: diffusion_transformer
+  - _self_
+
+paths:
+  data_dir: data/raw
+  models_dir: artifacts/models
+  processed_dir: data/processed/splits
+  scalers_dir: data/processed/scalers
+
+experiment:
+  stations: [E802]
+  models: [diffusion_transformer]
+  features: [PM2.5]
+  block_size: 24
+  step_size: 1
+  missing_rate: 0.20
+  seed: 42
+
+training:
+  epochs: 300
+  batch_size: 128
+  lr: 0.001
+  patience: 250
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
