@@ -18,7 +18,16 @@ def run(cfg: DictConfig) -> None:
     processed_dir = Path(cfg.paths.processed_dir)
     scalers_dir = Path(cfg.paths.scalers_dir)
 
-    features = list(cfg.experiment.features)
+    requested_features = list(cfg.experiment.features)
+    features = [f for f in requested_features if f != "station"]
+    if len(features) != len(requested_features):
+        print("[INFO] 'station' is handled via station_id embedding and removed from numeric features.")
+    never_mask_features = list(cfg.experiment.never_mask_features) if "never_mask_features" in cfg.experiment else []
+    never_mask_features_set = set(never_mask_features)
+    never_mask_feature_indices = [i for i, f in enumerate(features) if f in never_mask_features_set]
+    unknown_never_mask = [f for f in never_mask_features if f not in features]
+    if unknown_never_mask:
+        print(f"[WARN] never_mask_features not present in experiment.features: {unknown_never_mask}")
     stations = list(cfg.experiment.stations)
     model_names = list(cfg.experiment.models) if "models" in cfg.experiment else [str(cfg.model.type)]
     model_cfgs = [load_model_cfg_by_name(name) for name in model_names]
@@ -39,16 +48,35 @@ def run(cfg: DictConfig) -> None:
                 mask_mode=str(cfg.experiment.mask_mode),
                 block_min_len=int(cfg.experiment.block_min_len),
                 block_max_len=int(cfg.experiment.block_max_len),
+                block_missing_prob=float(cfg.experiment.block_missing_prob)
+                if "block_missing_prob" in cfg.experiment
+                else None,
+                feature_block_prob=float(cfg.experiment.feature_block_prob)
+                if "feature_block_prob" in cfg.experiment
+                else 0.6,
+                block_no_overlap=bool(cfg.experiment.block_no_overlap)
+                if "block_no_overlap" in cfg.experiment
+                else True,
+                never_mask_feature_indices=never_mask_feature_indices,
             )
 
-            dataset_train = {"X": datasets["X_train"]}
-            dataset_val = {"X": datasets["X_val_masked"], "X_ori": datasets["X_val_ori"]}
+            dataset_train = {
+                "X": datasets["X_train"],
+                "station_ids": datasets.get("S_train"),
+                "never_mask_feature_indices": never_mask_feature_indices,
+            }
+            dataset_val = {
+                "X": datasets["X_val_masked"],
+                "X_ori": datasets["X_val_ori"],
+                "station_ids": datasets.get("S_val"),
+            }
 
             for model_cfg in model_cfgs:
                 model, model_config, model_type, checkpoint_name = build_model_from_cfg(
                     model_cfg,
                     n_features=len(features),
                     block_size=int(cfg.experiment.block_size),
+                    runtime_params={"n_stations": int(datasets.get("n_stations", 1))},
                 )
                 print(f"Model type: {model_type}")
                 print(f"Model params: {model.number_of_params()}")

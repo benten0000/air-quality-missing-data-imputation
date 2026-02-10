@@ -1,5 +1,5 @@
 defaults:
-  - model: diffusion_transformer
+  - model: classic_transformer
   - _self_
 
 paths:
@@ -9,20 +9,24 @@ paths:
   scalers_dir: data/processed/scalers
 
 experiment:
-  stations: [E802]
-  models: [classic_transformer]
-  features: [PM2.5]
+  stations: [all_stations]
+  models: [classic_transformer, saits]
+  features: [PM10,PM2.5,temperature,rain,pressure,precipitation,wind_speed,clouds,wind_direction]
+  never_mask_features: []
   block_size: 24
   step_size: 1
   missing_rate: 0.20
   seed: 42
-  mask_mode: block
-  block_min_len: 2
-  block_max_len: 14
+  mask_mode: block_feature
+  block_min_len: ${model.params.train_block_min_len}
+  block_max_len: ${model.params.train_block_max_len}
+  block_missing_prob: ${model.params.train_block_missing_prob}
+  feature_block_prob: ${model.params.train_feature_block_prob}
+  block_no_overlap: ${model.params.train_block_no_overlap}
 
 training:
-  epochs: 300
-  batch_size: 128
+  epochs: 100
+  batch_size: 256
   lr: 0.001
   patience: 250
 

@@ -51,16 +51,10 @@ class RMSNorm(nn.Module):
         return x * rms * self.weight
 
 
-_diagonal_mask_cache = {}
-
-
 def get_diagonal_mask(T: int, device: torch.device) -> torch.Tensor:
-    cache_key = (T, str(device))
-    if cache_key not in _diagonal_mask_cache:
-        mask = torch.zeros((T, T), device=device)
-        mask.fill_diagonal_(-1e9)
-        _diagonal_mask_cache[cache_key] = mask
-    return _diagonal_mask_cache[cache_key]
+    mask = torch.zeros((T, T), device=device)
+    mask.fill_diagonal_(-1e9)
+    return mask
 
 
 class SelfAttention(nn.Module):
@@ -142,7 +136,6 @@ class DiffusionTransformerConfig:
     block_size: int = 24
     n_features: int = 10
     d_model: int = 128
-    t_dim: int = 24
     n_layer: int = 3
     n_head: int = 4
     dropout: float = 0.1
@@ -297,7 +290,7 @@ class DiffusionTransformerImputer(nn.Module):
         patience_counter = 0
 
         amp_enabled = device.type == "cuda"
-        scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+        scaler = torch.GradScaler(device.type, enabled=amp_enabled)
 
         for epoch in range(epochs):
             self.train()

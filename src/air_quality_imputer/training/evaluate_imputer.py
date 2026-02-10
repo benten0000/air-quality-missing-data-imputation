@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 from omegaconf import DictConfig
 
-from air_quality_imputer.training.data_utils import mask_windows, mask_windows_blocks
+from air_quality_imputer.training.data_utils import mask_windows, mask_windows_block_feature, mask_windows_blocks
 from air_quality_imputer.training.model_registry import build_model_from_checkpoint, load_model_cfg_by_name
 
 
@@ -28,6 +28,10 @@ def evaluate_station(
     mask_mode: str,
     block_min_len: int,
     block_max_len: int,
+    block_missing_prob: float | None,
+    feature_block_prob: float,
+    block_no_overlap: bool,
+    never_mask_features: list[str] | None,
     device: torch.device,
 ) -> tuple[dict, list[dict]]:
     model_path = models_dir / model_type / station / checkpoint_name
@@ -44,6 +48,8 @@ def evaluate_station(
     if config is None:
         raise KeyError(f"Checkpoint at {model_path} is missing 'config_dict' and 'config'")
     features = checkpoint["features"]
+    never_mask_features_set = set(never_mask_features or [])
+    never_mask_feature_indices = [i for i, f in enumerate(features) if f in never_mask_features_set]
 
     model = build_model_from_checkpoint(ckpt_model_type, config)
     model.load_state_dict(checkpoint["state_dict"])
@@ -52,6 +58,7 @@ def evaluate_station(
 
     windows = np.load(windows_path)
     X_test_ori = windows["X_test_ori"].astype(np.float32)
+    S_test = windows["S_test"].astype(np.int64) if "S_test" in windows.files else None
     if mask_mode == "block":
         X_test_masked = mask_windows_blocks(
             X_test_ori,
@@ -59,6 +66,18 @@ def evaluate_station(
             seed=seed,
             min_block_len=block_min_len,
             max_block_len=block_max_len,
+        )
+    elif mask_mode == "block_feature":
+        X_test_masked = mask_windows_block_feature(
+            X_test_ori,
+            missing_rate=missing_rate,
+            seed=seed,
+            min_block_len=block_min_len,
+            max_block_len=block_max_len,
+            block_missing_prob=block_missing_prob,
+            feature_missing_prob=feature_block_prob,
+            no_overlap=block_no_overlap,
+            never_mask_feature_indices=never_mask_feature_indices,
         )
     elif mask_mode == "random":
         X_test_masked = mask_windows(X_test_ori, missing_rate=missing_rate, seed=seed)
@@ -69,7 +88,10 @@ def evaluate_station(
     if not eval_mask.any():
         raise ValueError(f"No masked values for station {station}; increase missing_rate")
 
-    X_imputed = model.impute({"X": X_test_masked})
+    impute_dataset = {"X": X_test_masked}
+    if S_test is not None:
+        impute_dataset["station_ids"] = S_test
+    X_imputed = model.impute(impute_dataset)
     if X_imputed is None:
         raise RuntimeError(f"Imputation failed for station {station}")
 
@@ -115,6 +137,10 @@ def run(cfg: DictConfig) -> None:
     mask_mode = str(cfg.experiment.mask_mode)
     block_min_len = int(cfg.experiment.block_min_len)
     block_max_len = int(cfg.experiment.block_max_len)
+    block_missing_prob = float(cfg.experiment.block_missing_prob) if "block_missing_prob" in cfg.experiment else None
+    feature_block_prob = float(cfg.experiment.feature_block_prob) if "feature_block_prob" in cfg.experiment else 0.6
+    block_no_overlap = bool(cfg.experiment.block_no_overlap) if "block_no_overlap" in cfg.experiment else True
+    never_mask_features = list(cfg.experiment.never_mask_features) if "never_mask_features" in cfg.experiment else []
 
     for model_cfg in model_cfgs:
         model_type = str(model_cfg.type)
@@ -138,6 +164,10 @@ def run(cfg: DictConfig) -> None:
                     mask_mode=mask_mode,
                     block_min_len=block_min_len,
                     block_max_len=block_max_len,
+                    block_missing_prob=block_missing_prob,
+                    feature_block_prob=feature_block_prob,
+                    block_no_overlap=block_no_overlap,
+                    never_mask_features=never_mask_features,
                     device=device,
                 )
                 overall_rows.append(overall_row)

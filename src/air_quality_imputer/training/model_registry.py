@@ -50,7 +50,12 @@ def _to_plain_dict(params: Any) -> dict[str, Any]:
     raise TypeError(f"Expected mapping-like params, got: {type(params)!r}")
 
 
-def build_model_from_cfg(model_cfg: DictConfig, n_features: int, block_size: int):
+def build_model_from_cfg(
+    model_cfg: DictConfig,
+    n_features: int,
+    block_size: int,
+    runtime_params: Mapping[str, Any] | None = None,
+):
     model_type = str(model_cfg.type)
     if model_type not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -62,6 +67,12 @@ def build_model_from_cfg(model_cfg: DictConfig, n_features: int, block_size: int
     params = _to_plain_dict(model_cfg.params)
     params["n_features"] = n_features
     params["block_size"] = block_size
+    if runtime_params:
+        dataclass_fields = getattr(config_cls, "__dataclass_fields__", {})
+        allowed_keys = set(dataclass_fields.keys()) if isinstance(dataclass_fields, dict) else set()
+        for key, value in runtime_params.items():
+            if key in allowed_keys:
+                params[key] = value
 
     model_config = config_cls(**params)
     model = model_cls(model_config)

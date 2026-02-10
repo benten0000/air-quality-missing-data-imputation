@@ -1,5 +1,5 @@
 defaults:
-  - model: diffusion_transformer
+  - model: classic_transformer
   - _self_
 
 paths:
@@ -8,13 +8,17 @@ paths:
   reports_dir: reports/model_eval
 
 experiment:
-  stations: [E802]
+  stations: [all_stations]
   models: [classic_transformer, saits]
+  never_mask_features: []
   missing_rate: 0.20
   seed: 123
-  mask_mode: block
-  block_min_len: 2
-  block_max_len: 14
+  mask_mode: block_feature
+  block_min_len: ${model.params.train_block_min_len}
+  block_max_len: ${model.params.train_block_max_len}
+  block_missing_prob: ${model.params.train_block_missing_prob}
+  feature_block_prob: ${model.params.train_feature_block_prob}
+  block_no_overlap: ${model.params.train_block_no_overlap}
 
 hydra:
   run:
