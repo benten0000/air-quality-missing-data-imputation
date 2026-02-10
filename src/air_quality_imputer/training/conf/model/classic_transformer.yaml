@@ -14,7 +14,9 @@ params:
   optimizer_fused: true
   preload_data_to_gpu: true
   gpu_preload_max_mem_frac: 0.5
-  dataloader_num_workers: 0
+  dataloader_num_workers: -1
+  dataloader_prefetch_factor: 2
+  dataloader_persistent_workers: true
   dataloader_pin_memory: true
 
   # Train masking mode
@@ -37,3 +39,6 @@ params:
   # If true, blocks are contiguous partition (no overlap stacking)
   # If false, sampled blocks may overlap
   train_block_no_overlap: true
+
+  # Dense-only transformer (MoE is forced off in classic_transformer model class)
+  moe_enabled: false

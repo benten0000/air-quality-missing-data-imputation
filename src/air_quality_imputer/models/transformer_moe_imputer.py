@@ -116,20 +116,161 @@ class MLP(nn.Module):
         return x
 
 
+class ExpertMLP(nn.Module):
+    def __init__(self, config, width_mult: float = 1.0):
+        super().__init__()
+        hidden_dim = max(1, int(round(4 * config.d_model * width_mult)))
+        self.c_fc = nn.Linear(config.d_model, hidden_dim, bias=config.bias)
+        self.c_gate = nn.Linear(config.d_model, hidden_dim, bias=config.bias)
+        self.c_proj = nn.Linear(hidden_dim, config.d_model, bias=config.bias)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.c_fc(x) * F.silu(self.c_gate(x))
+        x = self.c_proj(x)
+        return self.dropout(x)
+
+
+class TopKGroupedSharedMoE(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.d_model = config.d_model
+        self.n_experts = int(getattr(config, "moe_num_experts", 4))
+        self.top_k = int(getattr(config, "moe_top_k", 2))
+        self.n_groups = int(getattr(config, "moe_n_expert_groups", 1))
+        self.n_limited_groups = int(getattr(config, "moe_n_limited_groups", 1))
+        score_func = str(getattr(config, "moe_score_func", "softmax"))
+        self.route_scale = float(getattr(config, "moe_route_scale", 1.0))
+        self.use_shared_expert = bool(getattr(config, "moe_use_shared_expert", True))
+        self.n_shared_experts = int(getattr(config, "moe_n_shared_experts", 1))
+        self.expert_width_mult = float(getattr(config, "moe_expert_width_mult", 1.0))
+
+        if self.n_experts < 1:
+            raise ValueError(f"moe_num_experts must be >= 1, got {self.n_experts}")
+        if self.top_k < 1 or self.top_k > self.n_experts:
+            raise ValueError(f"moe_top_k must be in [1, moe_num_experts], got {self.top_k}")
+        if self.n_groups < 1 or self.n_experts % self.n_groups != 0:
+            raise ValueError(
+                f"moe_n_expert_groups must be >=1 and divide moe_num_experts ({self.n_experts}), got {self.n_groups}"
+            )
+        if self.n_limited_groups < 1 or self.n_limited_groups > self.n_groups:
+            raise ValueError(
+                f"moe_n_limited_groups must be in [1, moe_n_expert_groups], got {self.n_limited_groups}"
+            )
+        max_selectable_experts = (self.n_experts // self.n_groups) * self.n_limited_groups
+        if self.top_k > max_selectable_experts:
+            raise ValueError(
+                "moe_top_k must be <= experts available after group limit: "
+                f"{self.top_k} > {max_selectable_experts}"
+            )
+        if score_func not in {"softmax", "sigmoid"}:
+            raise ValueError(f"moe_score_func must be 'softmax' or 'sigmoid', got {score_func}")
+        self.score_func = cast(Literal["softmax", "sigmoid"], score_func)
+        if self.route_scale <= 0.0:
+            raise ValueError(f"moe_route_scale must be > 0, got {self.route_scale}")
+        if self.n_shared_experts < 0:
+            raise ValueError(f"moe_n_shared_experts must be >= 0, got {self.n_shared_experts}")
+        if self.expert_width_mult <= 0.0:
+            raise ValueError(f"moe_expert_width_mult must be > 0, got {self.expert_width_mult}")
+
+        self.experts_per_group = self.n_experts // self.n_groups
+        self.router = nn.Linear(config.d_model, self.n_experts, bias=config.bias)
+        shared_width_mult = self.expert_width_mult * max(1, self.n_shared_experts)
+        self.shared_mlp = (
+            ExpertMLP(config, width_mult=shared_width_mult)
+            if self.use_shared_expert and self.n_shared_experts > 0
+            else None
+        )
+        self.experts = nn.ModuleList([ExpertMLP(config, width_mult=self.expert_width_mult) for _ in range(self.n_experts)])
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        bsz, seq_len, d_model = x.shape
+        if d_model != self.d_model:
+            raise ValueError(f"Expected last dim {self.d_model}, got {d_model}")
+        x_flat = x.reshape(-1, d_model)
+        n_tokens = x_flat.shape[0]
+
+        router_logits = self.router(x_flat)
+        router_scores = F.softmax(router_logits, dim=-1) if self.score_func == "softmax" else torch.sigmoid(router_logits)
+
+        scores_for_topk = router_scores
+        if self.n_groups > 1:
+            grouped = router_scores.view(n_tokens, self.n_groups, self.experts_per_group)
+            # Match DeepSeek-style group preselection:
+            # with bias, use stronger top2 aggregation; otherwise use max.
+            if self.router.bias is not None and self.experts_per_group >= 2:
+                group_scores = grouped.topk(k=2, dim=-1).values.sum(dim=-1)
+            else:
+                group_scores = grouped.amax(dim=-1)
+            chosen_groups = torch.topk(group_scores, k=self.n_limited_groups, dim=-1).indices
+            group_keep = torch.zeros_like(group_scores, dtype=torch.bool).scatter_(1, chosen_groups, True)
+            scores_for_topk = grouped.masked_fill(~group_keep.unsqueeze(-1), float("-inf")).view(n_tokens, self.n_experts)
+
+        topk_scores, topk_idx = torch.topk(scores_for_topk, k=self.top_k, dim=-1)
+        route_weights = topk_scores
+        if self.score_func == "sigmoid":
+            route_weights = route_weights / route_weights.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+        route_weights = route_weights * self.route_scale
+
+        expert_out = torch.zeros_like(x_flat)
+        dispatch_counts = torch.bincount(topk_idx.reshape(-1), minlength=self.n_experts)
+        overflow_tokens = torch.zeros((), device=x.device, dtype=torch.long)
+
+        for expert_idx, expert in enumerate(self.experts):
+            dispatch = torch.nonzero(topk_idx == expert_idx, as_tuple=False)
+            if dispatch.numel() == 0:
+                continue
+            token_idx = dispatch[:, 0]
+            slot_idx = dispatch[:, 1]
+            routed_out = expert(x_flat.index_select(0, token_idx))
+            routed_out = routed_out * route_weights[token_idx, slot_idx].unsqueeze(-1)
+            expert_out.index_add_(0, token_idx, routed_out)
+
+        if self.shared_mlp is not None:
+            shared_out = self.shared_mlp(x_flat)
+        else:
+            shared_out = torch.zeros_like(x_flat)
+
+        y_flat = shared_out + expert_out
+
+        if self.score_func == "softmax":
+            router_probs = router_scores
+        else:
+            router_probs = router_scores / router_scores.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+        f_e = dispatch_counts.float() / max(1, n_tokens * self.top_k)
+        p_e = router_probs.mean(dim=0)
+        lb_raw = self.n_experts * torch.sum(f_e * p_e)
+        lb_loss = lb_raw - 1.0
+
+        routing_stats = {
+            "tokens_per_expert": dispatch_counts,
+            "overflow_tokens": overflow_tokens,
+        }
+        return y_flat.view(bsz, seq_len, d_model), lb_loss, routing_stats
+
+
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.ln_1 = RMSNorm(config.d_model, eps=config.norm_eps)
         self.attn = MultiHeadSelfAttention(config)
         self.ln_2 = RMSNorm(config.d_model, eps=config.norm_eps)
-        self.ff = MLP(config)
+        self.moe_enabled = bool(getattr(config, "moe_enabled", False))
+        if self.moe_enabled:
+            self.ff = TopKGroupedSharedMoE(config)
+        else:
+            self.ff = MLP(config)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None]:
         x = x + self.attn(self.ln_1(x))
-        ff_out = self.ff(self.ln_2(x))
+        if self.moe_enabled:
+            ff_out, aux_loss, routing_stats = self.ff(self.ln_2(x))
+        else:
+            ff_out = self.ff(self.ln_2(x))
+            aux_loss = x.new_zeros(())
+            routing_stats = None
         x = x + ff_out
-        aux_loss = x.new_zeros(())
-        return x, aux_loss, None
+        return x, aux_loss, routing_stats
 
 
 @dataclass
@@ -160,20 +301,19 @@ class TransformerConfig:
     dataloader_prefetch_factor: int = 2
     dataloader_persistent_workers: bool = True
     dataloader_pin_memory: bool = True
-    # Dense-only implementation: MoE params are accepted for config compatibility.
     moe_enabled: bool = False
-    moe_num_experts: int = 1
-    moe_top_k: int = 1
+    moe_num_experts: int = 4
+    moe_top_k: int = 2
     moe_expert_width_mult: float = 1.0
-    moe_n_shared_experts: int = 0
+    moe_n_shared_experts: int = 1
     moe_n_expert_groups: int = 1
     moe_n_limited_groups: int = 1
     moe_score_func: Literal["softmax", "sigmoid"] = "softmax"
     moe_route_scale: float = 1.0
-    moe_capacity_factor: float = 1.0
-    moe_load_balance_weight: float = 0.0
-    moe_use_shared_expert: bool = False
-    moe_shared_plus_expert: bool = False
+    moe_capacity_factor: float = 1.25
+    moe_load_balance_weight: float = 0.01
+    moe_use_shared_expert: bool = True
+    moe_shared_plus_expert: bool = True
 
 
 class TransformerImputer(nn.Module):
@@ -187,11 +327,14 @@ class TransformerImputer(nn.Module):
         self.transformer = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
         self.ln_f = RMSNorm(config.d_model, eps=config.norm_eps)
         self.output_head = nn.Linear(config.d_model, config.n_features)
-        # Dense-only mode (MoE hard-disabled in this model file).
-        self.moe_enabled = False
-        self.moe_num_experts = 1
-        self.moe_lb_weight = 0.0
-        self.moe_top_k = 1
+        self.moe_enabled = bool(getattr(config, "moe_enabled", False))
+        self.moe_num_experts = int(getattr(config, "moe_num_experts", 4))
+        self.moe_lb_weight = float(getattr(config, "moe_load_balance_weight", 0.01))
+        self.moe_top_k = int(getattr(config, "moe_top_k", 2))
+        if self.moe_enabled and (self.moe_top_k < 1 or self.moe_top_k > self.moe_num_experts):
+            raise ValueError(
+                f"moe_top_k must be in [1, moe_num_experts] when MoE is enabled, got {self.moe_top_k}"
+            )
 
     def _forward_with_aux(
         self, x: torch.Tensor, mask: torch.Tensor, station_ids: torch.Tensor | None = None

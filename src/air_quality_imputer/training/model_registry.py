@@ -10,12 +10,22 @@ from air_quality_imputer.models.diffusion_imputer import (
 )
 from air_quality_imputer.models.saits_imputer import SAITSConfig, SAITSImputer
 from air_quality_imputer.models.transformer_imputer import TransformerConfig, TransformerImputer
+from air_quality_imputer.models.transformer_moe_imputer import (
+    TransformerConfig as MoETransformerConfig,
+)
+from air_quality_imputer.models.transformer_moe_imputer import (
+    TransformerImputer as MoETransformerImputer,
+)
 
 
 MODEL_REGISTRY = {
     "classic_transformer": {
         "config_cls": TransformerConfig,
         "model_cls": TransformerImputer,
+    },
+    "classic_transformer_moe": {
+        "config_cls": MoETransformerConfig,
+        "model_cls": MoETransformerImputer,
     },
     "diffusion_transformer": {
         "config_cls": DiffusionTransformerConfig,

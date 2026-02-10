@@ -10,7 +10,7 @@ paths:
 
 experiment:
   stations: [all_stations]
-  models: [saits]
+  models: [classic_transformer, saits]
   features: [PM10,PM2.5,temperature,rain,pressure,precipitation,wind_speed,clouds,wind_direction]
   never_mask_features: []
   block_size: 24
