@@ -6,8 +6,8 @@ stages:
     deps:
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: 8626c9ca8cb256801ebebb64ea47d432
-      size: 2471
+      md5: 9362c29b7db6374a55c47db5c28b8b62
+      size: 2473
     - path: data/raw
       hash: md5
       md5: 2e63b05f91bd8adf716e3332c0d18150.dir
@@ -15,16 +15,16 @@ stages:
       nfiles: 22
     - path: src/air_quality_imputer/pipeline/common.py
       hash: md5
-      md5: e871b431d547437f5fd847772b1521f0
-      size: 2206
+      md5: 98a131c183257fdce4f99b64b7c4560d
+      size: 1962
     - path: src/air_quality_imputer/pipeline/prepare_data.py
       hash: md5
-      md5: f5955c263874988603cdf9f040812f19
-      size: 3160
+      md5: 5928c768dbc767067da71160f5c21656
+      size: 3026
     - path: src/air_quality_imputer/training/data_utils.py
       hash: md5
-      md5: 9a9eef90399c132f452909ffa717b715
-      size: 16643
+      md5: 2897ed17460bde852f529dc2681c7807
+      size: 15814
     params:
       configs/pipeline/params.yaml:
         experiment:
@@ -76,8 +76,8 @@ stages:
     deps:
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: 8626c9ca8cb256801ebebb64ea47d432
-      size: 2471
+      md5: 66d55b2ca80080f917c70eca00faa3cf
+      size: 2474
     - path: data/processed/scalers
       hash: md5
       md5: e5b6ace05440a4559bcdf5bffe49d04d.dir
@@ -95,20 +95,20 @@ stages:
       nfiles: 4
     - path: src/air_quality_imputer/pipeline/common.py
       hash: md5
-      md5: e871b431d547437f5fd847772b1521f0
-      size: 2206
+      md5: 98a131c183257fdce4f99b64b7c4560d
+      size: 1962
     - path: src/air_quality_imputer/pipeline/train_models.py
       hash: md5
-      md5: b87cfd5f4bf56640804141e38fce4901
-      size: 7197
+      md5: a2005c8a4cbe5b211c52ad82d1b53d41
+      size: 7531
     - path: src/air_quality_imputer/tracking/mlflow_utils.py
       hash: md5
-      md5: 59df9e76fbb7ab681271e27eb5afdca6
-      size: 11082
+      md5: 48aed6fa8743d32e019148fadbba8c7f
+      size: 9930
     - path: src/air_quality_imputer/training/model_registry.py
       hash: md5
-      md5: a7907802ba9659c5dd3add24b76b82f4
-      size: 3110
+      md5: 7704f2c9969392d59ec578ca1c3b17d1
+      size: 2688
     params:
       configs/pipeline/params.yaml:
         experiment.models:
@@ -180,15 +180,15 @@ stages:
           experiment_name: air-quality-imputer
           register_models: true
         training:
-          epochs: 1
-          batch_size: 128
+          epochs: 100
+          batch_size: 256
           lr: 0.0008
-          patience: 0
+          patience: 20
           min_delta: 0.0001
     outs:
     - path: artifacts/models
       hash: md5
-      md5: 1b02269642dd7197d4a90295cadd148f.dir
+      md5: 1bf7f4b9e9308f285d3cef7e08dc9faf.dir
       size: 24567428
       nfiles: 2
   evaluate_models:
@@ -197,13 +197,13 @@ stages:
     deps:
     - path: artifacts/models
       hash: md5
-      md5: 1b02269642dd7197d4a90295cadd148f.dir
+      md5: 1bf7f4b9e9308f285d3cef7e08dc9faf.dir
       size: 24567428
       nfiles: 2
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: 8626c9ca8cb256801ebebb64ea47d432
-      size: 2471
+      md5: 0635087bc961bf3be11f889cf3c629a4
+      size: 2472
     - path: data/processed/splits
       hash: md5
       md5: 320b26433be58f1397fc16ef2914e2f2.dir
@@ -211,29 +211,29 @@ stages:
       nfiles: 5
     - path: src/air_quality_imputer/models
       hash: md5
-      md5: 586232ceb3b01c2f291417467fae6e92.dir
-      size: 30011
+      md5: 3e7cbdf4b96ff5c1500f21d9ba6105bd.dir
+      size: 30162
       nfiles: 4
     - path: src/air_quality_imputer/pipeline/common.py
       hash: md5
-      md5: e871b431d547437f5fd847772b1521f0
-      size: 2206
+      md5: 98a131c183257fdce4f99b64b7c4560d
+      size: 1962
     - path: src/air_quality_imputer/pipeline/evaluate_models.py
       hash: md5
-      md5: 51c5a52e06ab0ed38a74a884eb801613
-      size: 18447
+      md5: 316945c1787a445c8961d948ecd319f3
+      size: 18478
     - path: src/air_quality_imputer/tracking/mlflow_utils.py
       hash: md5
-      md5: 59df9e76fbb7ab681271e27eb5afdca6
-      size: 11082
+      md5: 48aed6fa8743d32e019148fadbba8c7f
+      size: 9930
     - path: src/air_quality_imputer/training/data_utils.py
       hash: md5
-      md5: 9a9eef90399c132f452909ffa717b715
-      size: 16643
+      md5: 2897ed17460bde852f529dc2681c7807
+      size: 15814
     - path: src/air_quality_imputer/training/model_registry.py
       hash: md5
-      md5: a7907802ba9659c5dd3add24b76b82f4
-      size: 3110
+      md5: 7704f2c9969392d59ec578ca1c3b17d1
+      size: 2688
     params:
       configs/pipeline/params.yaml:
         experiment:
@@ -259,7 +259,7 @@ stages:
           step_size: 1
           missing_rate: 0.2
           seed: 42
-          mask_mode: random
+          mask_mode: block
           block_min_len: 2
           block_max_len: 14
           block_missing_prob: 0.35
@@ -289,7 +289,7 @@ stages:
               dataloader_prefetch_factor: 4
               dataloader_persistent_workers: true
               dataloader_pin_memory: true
-              train_mask_mode: random
+              train_mask_mode: block
               train_missing_rate: 0.2
               train_block_min_len: 2
               train_block_max_len: 14
@@ -334,19 +334,19 @@ stages:
     outs:
     - path: reports/metrics/model_eval_metrics.json
       hash: md5
-      md5: cc067622df5609c1aee9329ca654b2f9
-      size: 410
+      md5: 29afee906bb7dd1705d104ccafc88913
+      size: 404
     - path: reports/metrics/summary_by_feature_for_dvc_plots.csv
       hash: md5
-      md5: 5a6b999ed3f3ad94a3bbec5ad87c5892
-      size: 1331
+      md5: c34ccf0bdc46c813b4401c975d1b6f21
+      size: 1328
     - path: reports/model_eval
       hash: md5
-      md5: f6d0eb976a7ee9033189d5720553c4b0.dir
-      size: 4555
+      md5: 270a7a4877fd8ff2b135a06ecc5d4dd7.dir
+      size: 4528
       nfiles: 10
     - path: reports/plots/model_eval
       hash: md5
-      md5: 61c5c521e63efed4b03c16881c11f11e.dir
-      size: 99830
+      md5: 0256bc2c14d9cae4ed77a5e397b22945.dir
+      size: 100480
       nfiles: 2

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,7 +18,7 @@ from air_quality_imputer.pipeline.common import (
     to_plain_dict,
 )
 from air_quality_imputer.tracking.mlflow_utils import MLflowTracker
-from air_quality_imputer.training.data_utils import mask_windows, mask_windows_block_feature, mask_windows_blocks
+from air_quality_imputer.training.data_utils import mask_windows_by_mode
 from air_quality_imputer.training.model_registry import build_model_from_checkpoint
 
 
@@ -41,12 +41,28 @@ def weighted_mean(values: pd.Series, weights: pd.Series) -> float:
     return float(np.average(values_np[valid], weights=weights_np[valid]))
 
 
+def _aggregate_feature_rows(feature_all: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    grouped = feature_all.groupby(["model_type", "feature"], sort=True)
+    for (model_type, feature), group in grouped:
+        n_eval_series = pd.to_numeric(group["n_eval"], errors="coerce")
+        rows.append(
+            {
+                "model_type": str(model_type),
+                "feature": str(feature),
+                "n_eval": int(n_eval_series.fillna(0).sum()),
+                "mae": weighted_mean(group["mae"], n_eval_series),
+                "rmse": weighted_mean(group["rmse"], n_eval_series),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def build_eval_summaries(
     per_model_overall: dict[str, pd.DataFrame],
     per_model_feature: dict[str, pd.DataFrame],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     summary_overall_rows: list[dict[str, Any]] = []
-    summary_feature_rows: list[dict[str, Any]] = []
 
     for model_type, overall_df in per_model_overall.items():
         if overall_df.empty:
@@ -72,26 +88,19 @@ def build_eval_summaries(
             }
         )
 
-    for model_type, feature_df in per_model_feature.items():
-        if feature_df.empty:
-            continue
-        for feature, group in feature_df.groupby("feature"):
-            group_weights = cast(pd.Series, group["n_eval"])
-            summary_feature_rows.append(
-                {
-                    "model_type": model_type,
-                    "feature": str(feature),
-                    "n_eval": int(pd.to_numeric(group_weights, errors="coerce").fillna(0).sum()),
-                    "mae": weighted_mean(cast(pd.Series, group["mae"]), group_weights),
-                    "rmse": weighted_mean(cast(pd.Series, group["rmse"]), group_weights),
-                }
-            )
-
     summary_overall_df = pd.DataFrame(summary_overall_rows)
     if not summary_overall_df.empty:
         summary_overall_df = summary_overall_df.sort_values(["mae", "rmse"], na_position="last").reset_index(drop=True)
 
-    summary_feature_df = pd.DataFrame(summary_feature_rows)
+    feature_frames = [
+        df.assign(model_type=model_type)[["model_type", "feature", "n_eval", "mae", "rmse"]]
+        for model_type, df in per_model_feature.items()
+        if not df.empty
+    ]
+    summary_feature_df = pd.DataFrame()
+    if feature_frames:
+        feature_all = pd.concat(feature_frames, ignore_index=True)
+        summary_feature_df = _aggregate_feature_rows(feature_all)
     if not summary_feature_df.empty:
         summary_feature_df = summary_feature_df.sort_values(["feature", "mae"], na_position="last").reset_index(drop=True)
 
@@ -192,35 +201,18 @@ def evaluate_station(
     windows = np.load(windows_path)
     X_test_ori = windows["X_test_ori"].astype(np.float32)
     S_test = windows["S_test"].astype(np.int64) if "S_test" in windows.files else None
-    if mask_mode == "block":
-        X_test_masked = mask_windows_blocks(
-            X_test_ori,
-            missing_rate=missing_rate,
-            seed=seed,
-            min_block_len=block_min_len,
-            max_block_len=block_max_len,
-        )
-    elif mask_mode == "block_feature":
-        X_test_masked = mask_windows_block_feature(
-            X_test_ori,
-            missing_rate=missing_rate,
-            seed=seed,
-            min_block_len=block_min_len,
-            max_block_len=block_max_len,
-            block_missing_prob=block_missing_prob,
-            feature_missing_prob=feature_block_prob,
-            no_overlap=block_no_overlap,
-            never_mask_feature_indices=never_mask_feature_indices,
-        )
-    elif mask_mode == "random":
-        X_test_masked = mask_windows(X_test_ori, missing_rate=missing_rate, seed=seed)
-    else:
-        raise ValueError(f"Unsupported mask_mode: {mask_mode}")
-    if never_mask_feature_indices:
-        valid_indices = [idx for idx in never_mask_feature_indices if 0 <= idx < X_test_masked.shape[2]]
-        if valid_indices:
-            X_test_masked = X_test_masked.copy()
-            X_test_masked[:, :, valid_indices] = X_test_ori[:, :, valid_indices]
+    X_test_masked = mask_windows_by_mode(
+        X_test_ori,
+        missing_rate=missing_rate,
+        seed=seed,
+        mask_mode=mask_mode,
+        block_min_len=block_min_len,
+        block_max_len=block_max_len,
+        block_missing_prob=block_missing_prob,
+        feature_block_prob=feature_block_prob,
+        block_no_overlap=block_no_overlap,
+        never_mask_feature_indices=never_mask_feature_indices,
+    )
 
     eval_mask = np.isnan(X_test_masked) & ~np.isnan(X_test_ori)
     if not eval_mask.any():
@@ -282,8 +274,30 @@ def _to_metrics_json(summary_overall_df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _feature_metrics(feature_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        f"eval.feature.{row['feature']}.{metric}": row[metric]
+        for row in feature_rows
+        for metric in ("mae", "rmse")
+    }
+
+
+def _write_station_reports(
+    station_reports_dir: Path,
+    station: str,
+    overall_row: dict[str, Any],
+    feature_rows: list[dict[str, Any]],
+) -> tuple[Path, Path]:
+    station_overall_path = station_reports_dir / f"{station}_overall.csv"
+    station_feature_path = station_reports_dir / f"{station}_by_feature.csv"
+    pd.DataFrame([overall_row]).to_csv(station_overall_path, index=False)
+    pd.DataFrame(feature_rows).to_csv(station_feature_path, index=False)
+    return station_overall_path, station_feature_path
+
+
 def run(cfg: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    exp = cfg.experiment
 
     models_dir = Path(cfg.paths.models_dir)
     processed_dir = Path(cfg.paths.processed_dir)
@@ -291,24 +305,25 @@ def run(cfg: DictConfig) -> None:
     plots_dir = Path(cfg.paths.plots_dir)
     metrics_dir = Path(cfg.paths.metrics_dir)
 
-    stations = list(cfg.experiment.stations)
-    model_names = list(cfg.experiment.models)
+    stations = list(exp.stations)
+    model_names = list(exp.models)
     unsupported = sorted(set(model_names) - SUPPORTED_MODELS)
     if unsupported:
         raise ValueError(f"Unsupported models for V1 pipeline: {unsupported}")
 
-    missing_rate = float(cfg.experiment.missing_rate)
-    base_seed = int(cfg.experiment.seed)
-    mask_mode = str(cfg.experiment.mask_mode)
-    block_min_len = int(cfg.experiment.block_min_len)
-    block_max_len = int(cfg.experiment.block_max_len)
-    block_missing_prob_raw = cfg.experiment.block_missing_prob
+    missing_rate = float(exp.missing_rate)
+    base_seed = int(exp.seed)
+    mask_mode = str(exp.mask_mode)
+    block_min_len = int(exp.block_min_len)
+    block_max_len = int(exp.block_max_len)
+    block_missing_prob_raw = exp.block_missing_prob
     block_missing_prob = None if block_missing_prob_raw is None else float(block_missing_prob_raw)
-    feature_block_prob = float(cfg.experiment.feature_block_prob)
-    block_no_overlap = bool(cfg.experiment.block_no_overlap)
-    never_mask_features = list(cfg.experiment.never_mask_features)
+    feature_block_prob = float(exp.feature_block_prob)
+    block_no_overlap = bool(exp.block_no_overlap)
+    never_mask_features = list(exp.never_mask_features)
 
     tracker = MLflowTracker(to_plain_dict(cfg.get("tracking")))
+    experiment_params = to_plain_dict(exp)
 
     per_model_overall: dict[str, pd.DataFrame] = {}
     per_model_feature: dict[str, pd.DataFrame] = {}
@@ -347,10 +362,12 @@ def run(cfg: DictConfig) -> None:
             overall_rows.append(overall_row)
             per_feature_rows.extend(feature_rows)
 
-            station_overall_path = station_reports_dir / f"{station}_overall.csv"
-            station_feature_path = station_reports_dir / f"{station}_by_feature.csv"
-            pd.DataFrame([overall_row]).to_csv(station_overall_path, index=False)
-            pd.DataFrame(feature_rows).to_csv(station_feature_path, index=False)
+            station_overall_path, station_feature_path = _write_station_reports(
+                station_reports_dir,
+                station,
+                overall_row,
+                feature_rows,
+            )
 
             run_name = f"eval/{model_name}/{station}/seed-{run_seed}"
             tags = {
@@ -360,13 +377,10 @@ def run(cfg: DictConfig) -> None:
                 "seed": run_seed,
                 "mask_mode": mask_mode,
             }
-            feature_metrics: dict[str, Any] = {}
-            for row in feature_rows:
-                feature = str(row["feature"])
-                feature_metrics[f"eval.feature.{feature}.mae"] = row["mae"]
-                feature_metrics[f"eval.feature.{feature}.rmse"] = row["rmse"]
+            feature_metrics = _feature_metrics(feature_rows)
 
             with tracker.start_run(run_name=run_name, tags=tags):
+                model_params = to_plain_dict(model_cfg)
                 tracker.log_input_dataset(
                     name=f"prepared-{station}",
                     source=str(processed_dir / station / "windows.npz"),
@@ -377,8 +391,8 @@ def run(cfg: DictConfig) -> None:
                         "mask_mode": mask_mode,
                     },
                 )
-                tracker.log_params(to_plain_dict(cfg.experiment), prefix="experiment")
-                tracker.log_params(to_plain_dict(model_cfg), prefix=f"models.{model_name}")
+                tracker.log_params(experiment_params, prefix="experiment")
+                tracker.log_params(model_params, prefix=f"models.{model_name}")
                 tracker.log_metrics(
                     {
                         "eval.mae": overall_row["mae"],

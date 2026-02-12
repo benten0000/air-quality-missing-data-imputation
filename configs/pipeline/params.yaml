@@ -1,13 +1,13 @@
 experiment:
   stations: [all_stations]
   models: [transformer, saits]
-  features: [station, PM10, PM2.5, temperature, rain, pressure, precipitation, wind_speed, clouds, wind_direction]
-  never_mask_features: [station]
+  features: [PM10, PM2.5, temperature, rain, pressure, precipitation, wind_speed, clouds, wind_direction]
+  never_mask_features: []
   block_size: 24
   step_size: 1
   missing_rate: 0.2
   seed: 42
-  mask_mode: random
+  mask_mode: block
   block_min_len: 2
   block_max_len: 14
   block_missing_prob: 0.35
@@ -45,7 +45,7 @@ models:
       dataloader_prefetch_factor: 4
       dataloader_persistent_workers: true
       dataloader_pin_memory: true
-      train_mask_mode: random
+      train_mask_mode: block
       train_missing_rate: 0.2
       train_block_min_len: 2
       train_block_max_len: 14
@@ -71,7 +71,7 @@ models:
 
       # Losses/metrics
       training_loss: MAE
-      validation_metric: MSE
+      validation_metric: MAE
 
       # Runtime
       num_workers: 0

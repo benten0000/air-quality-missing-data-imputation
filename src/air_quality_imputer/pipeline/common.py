@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import random
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -44,15 +44,10 @@ def derive_seed(base_seed: int, station: str, model_name: str) -> int:
 
 
 def to_plain_dict(cfg: Any) -> dict[str, Any]:
-    def _string_key_dict(value: Mapping[Any, Any]) -> dict[str, Any]:
-        return {str(key): item for key, item in value.items()}
-
     if isinstance(cfg, DictConfig):
-        raw = OmegaConf.to_container(cfg, resolve=True)
-        if isinstance(raw, Mapping):
-            return _string_key_dict(cast(Mapping[Any, Any], raw))
+        cfg = OmegaConf.to_container(cfg, resolve=True)
     if isinstance(cfg, Mapping):
-        return _string_key_dict(cast(Mapping[Any, Any], cfg))
+        return {str(key): item for key, item in cfg.items()}
     return {}
 
 

@@ -1,5 +1,5 @@
 from dataclasses import asdict, is_dataclass
-from typing import Any, Mapping, cast
+from typing import Any, Mapping
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -19,23 +19,18 @@ MODEL_REGISTRY = {
 }
 
 
-def _mapping_to_str_key_dict(value: Mapping[Any, Any]) -> dict[str, Any]:
-    if not all(isinstance(k, str) for k in value):
-        raise TypeError("Model config keys must be strings")
-    return {cast(str, k): v for k, v in value.items()}
+def _to_str_key_dict(value: Mapping[Any, Any]) -> dict[str, Any]:
+    return {str(key): item for key, item in value.items()}
 
 
 def _to_plain_dict(params: Any) -> dict[str, Any]:
     if params is None:
         return {}
     if isinstance(params, DictConfig):
-        container = OmegaConf.to_container(params, resolve=True)
-        if not isinstance(container, Mapping):
-            raise TypeError(f"Expected mapping-like params, got: {type(container)!r}")
-        return _mapping_to_str_key_dict(container)
-    if isinstance(params, Mapping):
-        return _mapping_to_str_key_dict(params)
-    raise TypeError(f"Expected mapping-like params, got: {type(params)!r}")
+        params = OmegaConf.to_container(params, resolve=True)
+    if not isinstance(params, Mapping):
+        raise TypeError(f"Expected mapping-like params, got: {type(params)!r}")
+    return _to_str_key_dict(params)
 
 
 def build_model_from_cfg(
@@ -56,8 +51,7 @@ def build_model_from_cfg(
     params["n_features"] = n_features
     params["block_size"] = block_size
     if runtime_params:
-        dataclass_fields = getattr(config_cls, "__dataclass_fields__", {})
-        allowed_keys = set(dataclass_fields.keys()) if isinstance(dataclass_fields, dict) else set()
+        allowed_keys = set(getattr(config_cls, "__dataclass_fields__", {}))
         for key, value in runtime_params.items():
             if key in allowed_keys:
                 params[key] = value
@@ -82,5 +76,5 @@ def config_to_dict(model_config) -> dict[str, Any]:
     if is_dataclass(model_config) and not isinstance(model_config, type):
         return asdict(model_config)
     if isinstance(model_config, Mapping):
-        return _mapping_to_str_key_dict(model_config)
+        return _to_str_key_dict(model_config)
     raise TypeError(f"Unsupported model_config type: {type(model_config)!r}")

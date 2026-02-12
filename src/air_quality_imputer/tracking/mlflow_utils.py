@@ -5,7 +5,7 @@ import importlib
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Iterator, Mapping, cast
+from typing import Any, Iterator, Mapping
 
 
 try:
@@ -76,7 +76,7 @@ class MLflowTracker:
         self.base_tags = {"git_commit": _git_commit(), "project": "air-quality-imputer"}
         if not self.enabled:
             return
-        if self.enabled and not self._mlflow:
+        if self._mlflow is None:
             print("[WARN] MLflow is not installed, tracking is disabled.")
             self.enabled = False
             return
@@ -94,9 +94,6 @@ class MLflowTracker:
             self.enabled = False
 
     def _init_dagshub(self, cfg: Mapping[str, Any]) -> None:
-        if _dagshub is None:
-            print("[WARN] dagshub package is not installed, skipping dagshub.init.")
-            return
         repo_owner = cfg.get("repo_owner") or os.getenv("DAGSHUB_REPO_OWNER")
         repo_name = cfg.get("repo_name") or os.getenv("DAGSHUB_REPO_NAME")
         if not repo_owner or not repo_name:
@@ -113,7 +110,7 @@ class MLflowTracker:
     def _client(self) -> Any:
         if self._mlflow is None:
             raise RuntimeError("MLflow client is unavailable.")
-        return cast(Any, self._mlflow)
+        return self._mlflow
 
     @contextlib.contextmanager
     def start_run(self, run_name: str, tags: Mapping[str, Any] | None = None) -> Iterator[Any]:
@@ -177,6 +174,22 @@ class MLflowTracker:
         except Exception as exc:
             print(f"[WARN] Failed to log MLflow input dataset: {exc}")
 
+    @staticmethod
+    def _log_with_optional_registry(
+        log_fn: Any,
+        payload: dict[str, Any],
+        registered_model_name: str | None,
+        warn_label: str,
+    ) -> bool:
+        if registered_model_name:
+            try:
+                log_fn(registered_model_name=str(registered_model_name), **payload)
+                return True
+            except Exception as exc:
+                print(f"[WARN] {warn_label} registry logging failed, retrying without registry: {exc}")
+        log_fn(**payload)
+        return True
+
     def log_torch_model(self, model: Any, model_name: str, registered_model_name: str | None = None) -> bool:
         if not self.enabled:
             return False
@@ -186,15 +199,13 @@ class MLflowTracker:
             if not isinstance(model, nn.Module):
                 return False
             mlflow_pytorch = importlib.import_module("mlflow.pytorch")
-            kwargs: dict[str, Any] = {"name": str(model_name)}
-            if registered_model_name:
-                try:
-                    mlflow_pytorch.log_model(model, registered_model_name=str(registered_model_name), **kwargs)
-                    return True
-                except Exception as exc:
-                    print(f"[WARN] Model registry logging failed, retrying without registry: {exc}")
-            mlflow_pytorch.log_model(model, **kwargs)
-            return True
+            payload: dict[str, Any] = {"name": str(model_name), "pytorch_model": model}
+            return self._log_with_optional_registry(
+                mlflow_pytorch.log_model,
+                payload,
+                registered_model_name,
+                "Model",
+            )
         except Exception as exc:
             print(f"[WARN] Failed to log MLflow torch model: {exc}")
             return False
@@ -248,14 +259,12 @@ class MLflowTracker:
                 "python_model": _CheckpointPyfunc(),
                 "artifacts": {"checkpoint": str(ckpt)},
             }
-            if registered_model_name:
-                try:
-                    pyfunc.log_model(registered_model_name=str(registered_model_name), **payload)
-                    return True
-                except Exception as exc:
-                    print(f"[WARN] Pyfunc registry logging failed, retrying without registry: {exc}")
-            pyfunc.log_model(**payload)
-            return True
+            return self._log_with_optional_registry(
+                pyfunc.log_model,
+                payload,
+                registered_model_name,
+                "Pyfunc",
+            )
         except Exception as exc:
             print(f"[WARN] Failed to log MLflow pyfunc model from checkpoint: {exc}")
             return False

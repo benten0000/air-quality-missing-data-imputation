@@ -10,17 +10,18 @@ from air_quality_imputer.training.data_utils import prepare_station_datasets
 
 
 def run(cfg: DictConfig) -> None:
+    exp = cfg.experiment
     data_dir = Path(cfg.paths.data_dir)
     processed_dir = Path(cfg.paths.processed_dir)
     scalers_dir = Path(cfg.paths.scalers_dir)
 
-    features = list(cfg.experiment.features)
-    never_mask_features = list(cfg.experiment.never_mask_features)
-    never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in set(never_mask_features)]
+    features = list(exp.features)
+    never_mask_set = set(exp.never_mask_features)
+    never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in never_mask_set]
 
-    block_missing_prob_raw = cfg.experiment.block_missing_prob
+    block_missing_prob_raw = exp.block_missing_prob
     block_missing_prob = None if block_missing_prob_raw is None else float(block_missing_prob_raw)
-    stations = list(cfg.experiment.stations)
+    stations = list(exp.stations)
 
     manifest_rows: list[dict[str, object]] = []
     for station in stations:
@@ -30,16 +31,16 @@ def run(cfg: DictConfig) -> None:
             processed_dir=processed_dir,
             scalers_dir=scalers_dir,
             features=features,
-            block_size=int(cfg.experiment.block_size),
-            step_size=int(cfg.experiment.step_size),
-            missing_rate=float(cfg.experiment.missing_rate),
-            seed=int(cfg.experiment.seed),
-            mask_mode=str(cfg.experiment.mask_mode),
-            block_min_len=int(cfg.experiment.block_min_len),
-            block_max_len=int(cfg.experiment.block_max_len),
+            block_size=int(exp.block_size),
+            step_size=int(exp.step_size),
+            missing_rate=float(exp.missing_rate),
+            seed=int(exp.seed),
+            mask_mode=str(exp.mask_mode),
+            block_min_len=int(exp.block_min_len),
+            block_max_len=int(exp.block_max_len),
             block_missing_prob=block_missing_prob,
-            feature_block_prob=float(cfg.experiment.feature_block_prob),
-            block_no_overlap=bool(cfg.experiment.block_no_overlap),
+            feature_block_prob=float(exp.feature_block_prob),
+            block_no_overlap=bool(exp.block_no_overlap),
             never_mask_feature_indices=never_mask_feature_indices,
         )
         manifest_rows.append(

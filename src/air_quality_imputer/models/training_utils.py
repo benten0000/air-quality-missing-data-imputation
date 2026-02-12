@@ -127,7 +127,7 @@ def sample_block_feature_train_mask(
     config,
     never_mask_indices: list[int] | None = None,
 ) -> torch.Tensor:
-    mode = str(config.train_mask_mode)
+    mode = str(config.train_mask_mode).lower()
     missing_rate = _clamp01(float(config.train_missing_rate))
 
     observed = observed_mask.bool()
@@ -143,6 +143,9 @@ def sample_block_feature_train_mask(
 
     if mode == "random":
         return (torch.rand_like(observed_mask) < missing_rate) & maskable_observed
+    # "block" is accepted as a short alias for the existing block+feature masking mode.
+    if mode == "block":
+        mode = "block_feature"
     if mode != "block_feature":
         raise ValueError(f"Unsupported train_mask_mode: {mode}")
 

@@ -44,23 +44,29 @@ def _load_windows(processed_dir: Path, station: str) -> dict[str, Any]:
 
 
 def run(cfg: DictConfig) -> None:
-    base_seed = int(cfg.experiment.seed)
+    exp = cfg.experiment
+    train_cfg = cfg.training
+    base_seed = int(exp.seed)
     set_global_seed(base_seed)
 
     processed_dir = Path(cfg.paths.processed_dir)
     models_dir = Path(cfg.paths.models_dir)
 
-    features = list(cfg.experiment.features)
-    never_mask_features = list(cfg.experiment.never_mask_features)
-    never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in set(never_mask_features)]
+    features = list(exp.features)
+    n_features = len(features)
+    block_size = int(exp.block_size)
+    never_mask_features = set(exp.never_mask_features)
+    never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in never_mask_features]
 
-    stations = list(cfg.experiment.stations)
-    model_names = list(cfg.experiment.models)
+    stations = list(exp.stations)
+    model_names = list(exp.models)
     unsupported = sorted(set(model_names) - SUPPORTED_MODELS)
     if unsupported:
         raise ValueError(f"Unsupported models for V1 pipeline: {unsupported}")
 
     tracker = MLflowTracker(to_plain_dict(cfg.get("tracking")))
+    experiment_params = to_plain_dict(exp)
+    training_params = to_plain_dict(train_cfg)
 
     for station in stations:
         prepared = _load_windows(processed_dir=processed_dir, station=station)
@@ -82,8 +88,8 @@ def run(cfg: DictConfig) -> None:
 
             model, model_config, model_type, checkpoint_name = build_model_from_cfg(
                 model_cfg,
-                n_features=len(features),
-                block_size=int(cfg.experiment.block_size),
+                n_features=n_features,
+                block_size=block_size,
                 runtime_params={"n_stations": int(prepared["n_stations"])},
             )
 
@@ -93,10 +99,11 @@ def run(cfg: DictConfig) -> None:
                 "model": model_name,
                 "station": station,
                 "seed": run_seed,
-                "mask_mode": str(cfg.experiment.mask_mode),
+                "mask_mode": str(exp.mask_mode),
             }
 
             with tracker.start_run(run_name=run_name, tags=tags):
+                model_params = to_plain_dict(model_cfg)
                 tracker.log_input_dataset(
                     name=f"prepared-{station}",
                     source=str(prepared["windows_path"]),
@@ -107,19 +114,22 @@ def run(cfg: DictConfig) -> None:
                         "n_features": int(prepared["X_train"].shape[2]) if prepared["X_train"].ndim == 3 else 0,
                     },
                 )
-                tracker.log_params(to_plain_dict(cfg.experiment), prefix="experiment")
-                tracker.log_params(to_plain_dict(cfg.training), prefix="training")
-                tracker.log_params(to_plain_dict(model_cfg), prefix=f"models.{model_name}")
-                tracker.log_params({"n_features": len(features), "block_size": int(cfg.experiment.block_size)}, prefix="runtime")
+                tracker.log_params(experiment_params, prefix="experiment")
+                tracker.log_params(training_params, prefix="training")
+                tracker.log_params(model_params, prefix=f"models.{model_name}")
+                tracker.log_params(
+                    {"n_features": n_features, "block_size": block_size},
+                    prefix="runtime",
+                )
 
                 fit_stats = model.fit(
                     dataset_train,
                     validation_data=dataset_val,
-                    epochs=int(cfg.training.epochs),
-                    batch_size=int(cfg.training.batch_size),
-                    initial_lr=float(cfg.training.lr),
-                    patience=int(cfg.training.patience),
-                    min_delta=float(cfg.training.min_delta),
+                    epochs=int(train_cfg.epochs),
+                    batch_size=int(train_cfg.batch_size),
+                    initial_lr=float(train_cfg.lr),
+                    patience=int(train_cfg.patience),
+                    min_delta=float(train_cfg.min_delta),
                 )
 
                 out_model_station = models_dir / model_type / station
@@ -161,9 +171,7 @@ def run(cfg: DictConfig) -> None:
                     tags_payload["registered_model_name"] = registered_model_name
                 tracker.set_tags(tags_payload)
 
-                best_loss = None
-                if isinstance(fit_stats, dict):
-                    best_loss = fit_stats.get("best_loss")
+                best_loss = fit_stats.get("best_loss") if isinstance(fit_stats, dict) else None
                 tracker.log_metrics({"train.loss.best": best_loss})
                 print(f"[train] Saved model: {model_path}")
 
