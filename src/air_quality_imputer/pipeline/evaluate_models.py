@@ -216,6 +216,11 @@ def evaluate_station(
         X_test_masked = mask_windows(X_test_ori, missing_rate=missing_rate, seed=seed)
     else:
         raise ValueError(f"Unsupported mask_mode: {mask_mode}")
+    if never_mask_feature_indices:
+        valid_indices = [idx for idx in never_mask_feature_indices if 0 <= idx < X_test_masked.shape[2]]
+        if valid_indices:
+            X_test_masked = X_test_masked.copy()
+            X_test_masked[:, :, valid_indices] = X_test_ori[:, :, valid_indices]
 
     eval_mask = np.isnan(X_test_masked) & ~np.isnan(X_test_ori)
     if not eval_mask.any():
@@ -321,7 +326,7 @@ def run(cfg: DictConfig) -> None:
         per_feature_rows: list[dict[str, Any]] = []
 
         for station in stations:
-            run_seed = derive_seed(base_seed, station=station, model_name=model_name)
+            run_seed = derive_seed(base_seed, station=station, model_name="eval")
             overall_row, feature_rows = evaluate_station(
                 station=station,
                 model_type=model_type,
@@ -372,8 +377,9 @@ def run(cfg: DictConfig) -> None:
                     }
                 )
                 tracker.log_metrics(feature_metrics)
-                tracker.log_artifact(station_overall_path, artifact_path=f"evaluation/{station}")
-                tracker.log_artifact(station_feature_path, artifact_path=f"evaluation/{station}")
+                artifact_root = f"runs/eval/{model_name}/{station}/seed-{run_seed}"
+                tracker.log_artifact(station_overall_path, artifact_path=f"{artifact_root}/metrics")
+                tracker.log_artifact(station_feature_path, artifact_path=f"{artifact_root}/metrics")
 
             print(
                 f"[eval] {model_name}/{station}: "
@@ -415,12 +421,13 @@ def run(cfg: DictConfig) -> None:
             "mask_mode": mask_mode,
         },
     ):
-        tracker.log_artifact(summary_overall_path, artifact_path="summary/files")
-        tracker.log_artifact(summary_feature_path, artifact_path="summary/files")
-        tracker.log_artifact(metrics_path, artifact_path="summary/files")
-        tracker.log_artifact(plots_source_path, artifact_path="summary/files")
+        artifact_root = f"runs/eval/summary/all/seed-{base_seed}"
+        tracker.log_artifact(summary_overall_path, artifact_path=f"{artifact_root}/files")
+        tracker.log_artifact(summary_feature_path, artifact_path=f"{artifact_root}/files")
+        tracker.log_artifact(metrics_path, artifact_path=f"{artifact_root}/files")
+        tracker.log_artifact(plots_source_path, artifact_path=f"{artifact_root}/files")
         for plot_path in plot_paths:
-            tracker.log_artifact(plot_path, artifact_path="plots")
+            tracker.log_artifact(plot_path, artifact_path=f"{artifact_root}/plots")
 
     print(f"[eval] Saved summary: {summary_overall_path}")
     print(f"[eval] Saved summary: {summary_feature_path}")

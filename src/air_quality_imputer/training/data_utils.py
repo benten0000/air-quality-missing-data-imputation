@@ -168,6 +168,36 @@ def mask_windows_block_feature(
     return masked
 
 
+def _inject_station_feature(
+    windows: np.ndarray,
+    station_id: int,
+    n_stations: int,
+    station_feature_index: int | None,
+) -> np.ndarray:
+    if station_feature_index is None:
+        return windows
+    station_value = 0.0 if n_stations <= 1 else float(station_id) / float(n_stations - 1)
+    station_channel = np.full((windows.shape[0], windows.shape[1], 1), station_value, dtype=np.float32)
+    left = windows[:, :, :station_feature_index]
+    right = windows[:, :, station_feature_index:]
+    return np.concatenate([left, station_channel, right], axis=2).astype(np.float32, copy=False)
+
+
+def _restore_never_mask_features(
+    masked: np.ndarray,
+    original: np.ndarray,
+    never_mask_feature_indices: list[int] | None,
+) -> np.ndarray:
+    if not never_mask_feature_indices:
+        return masked
+    valid_indices = [idx for idx in never_mask_feature_indices if 0 <= idx < masked.shape[2]]
+    if not valid_indices:
+        return masked
+    restored = masked.copy()
+    restored[:, :, valid_indices] = original[:, :, valid_indices]
+    return restored
+
+
 def prepare_station_datasets(
     station: str,
     data_dir: Path,
@@ -191,10 +221,13 @@ def prepare_station_datasets(
         raise FileNotFoundError(f"Missing file for station {station}: {file_path}")
 
     df = pd.read_csv(file_path, parse_dates=["datetime"])
-    feature_cols = [c for c in features if c != "station"]
-    if not feature_cols:
+    model_feature_cols = list(features)
+    numeric_feature_cols = [c for c in model_feature_cols if c != "station"]
+    include_station_feature = "station" in model_feature_cols
+    station_feature_index = model_feature_cols.index("station") if include_station_feature else None
+    if not numeric_feature_cols:
         raise ValueError("No numeric features provided. Remove 'station' from features or add valid numeric features.")
-    required_cols = ["datetime"] + feature_cols
+    required_cols = ["datetime"] + numeric_feature_cols
     missing_cols = [c for c in required_cols if c not in df.columns]
     if missing_cols:
         raise ValueError(f"Station {station} missing columns: {missing_cols}")
@@ -204,19 +237,19 @@ def prepare_station_datasets(
     if station_column is not None:
         df[station_column] = df[station_column].astype(str)
         for station_name, station_df in df.groupby(station_column, sort=True):
-            cdf = station_df[["datetime"] + feature_cols].copy()
+            cdf = station_df[["datetime"] + numeric_feature_cols].copy()
             cdf["datetime"] = pd.to_datetime(cdf["datetime"], errors="coerce")
             cdf = cdf.dropna(subset=["datetime"]).sort_values("datetime")
             if cdf.empty:
                 continue
-            cdf[feature_cols] = cdf[feature_cols].apply(pd.to_numeric, errors="coerce")
+            cdf[numeric_feature_cols] = cdf[numeric_feature_cols].apply(pd.to_numeric, errors="coerce")
             group_frames.append((str(station_name), cdf))
     else:
-        cdf = df[["datetime"] + feature_cols].copy()
+        cdf = df[["datetime"] + numeric_feature_cols].copy()
         cdf["datetime"] = pd.to_datetime(cdf["datetime"], errors="coerce")
         cdf = cdf.dropna(subset=["datetime"]).sort_values("datetime")
         if not cdf.empty:
-            cdf[feature_cols] = cdf[feature_cols].apply(pd.to_numeric, errors="coerce")
+            cdf[numeric_feature_cols] = cdf[numeric_feature_cols].apply(pd.to_numeric, errors="coerce")
             group_frames.append((station, cdf))
 
     if not group_frames:
@@ -228,14 +261,14 @@ def prepare_station_datasets(
     train_arrays = []
     grouped_splits = []
     for station_name, cdf in group_frames:
-        data = cdf[feature_cols].to_numpy(dtype=np.float32)
+        data = cdf[numeric_feature_cols].to_numpy(dtype=np.float32)
         dt = cdf["datetime"].to_numpy()
         data_train, data_val, data_test = train_val_test_split(data)
         dt_train, dt_val, dt_test = train_val_test_split(dt)
 
-        train_df = pd.DataFrame(data_train, columns=feature_cols).assign(datetime=dt_train, station=station_name)
-        val_df = pd.DataFrame(data_val, columns=feature_cols).assign(datetime=dt_val, station=station_name)
-        test_df = pd.DataFrame(data_test, columns=feature_cols).assign(datetime=dt_test, station=station_name)
+        train_df = pd.DataFrame(data_train, columns=numeric_feature_cols).assign(datetime=dt_train, station=station_name)
+        val_df = pd.DataFrame(data_val, columns=numeric_feature_cols).assign(datetime=dt_val, station=station_name)
+        test_df = pd.DataFrame(data_test, columns=numeric_feature_cols).assign(datetime=dt_test, station=station_name)
         train_frames.append(train_df)
         val_frames.append(val_df)
         test_frames.append(test_df)
@@ -270,20 +303,23 @@ def prepare_station_datasets(
         if len(data_train) >= block_size:
             train_scaled = scaler.transform(data_train)
             win_train = create_sliding_windows(train_scaled, window_size=block_size, step_size=step_size)
+            win_train = _inject_station_feature(win_train, sid, len(station_names), station_feature_index)
             X_train_parts.append(win_train)
             S_train_parts.append(np.full((len(win_train),), sid, dtype=np.int64))
         if len(data_val) >= block_size:
             val_scaled = scaler.transform(data_val)
             win_val = create_sliding_windows(val_scaled, window_size=block_size, step_size=step_size)
+            win_val = _inject_station_feature(win_val, sid, len(station_names), station_feature_index)
             X_val_parts.append(win_val)
             S_val_parts.append(np.full((len(win_val),), sid, dtype=np.int64))
         if len(data_test) >= block_size:
             test_scaled = scaler.transform(data_test)
             win_test = create_sliding_windows(test_scaled, window_size=block_size, step_size=step_size)
+            win_test = _inject_station_feature(win_test, sid, len(station_names), station_feature_index)
             X_test_parts.append(win_test)
             S_test_parts.append(np.full((len(win_test),), sid, dtype=np.int64))
 
-    n_feat = len(feature_cols)
+    n_feat = len(model_feature_cols)
     X_train = np.concatenate(X_train_parts, axis=0) if X_train_parts else np.empty((0, block_size, n_feat), dtype=np.float32)
     X_val_ori = np.concatenate(X_val_parts, axis=0) if X_val_parts else np.empty((0, block_size, n_feat), dtype=np.float32)
     X_test_ori = np.concatenate(X_test_parts, axis=0) if X_test_parts else np.empty((0, block_size, n_feat), dtype=np.float32)
@@ -291,12 +327,24 @@ def prepare_station_datasets(
     S_val = np.concatenate(S_val_parts, axis=0) if S_val_parts else np.empty((0,), dtype=np.int64)
     S_test = np.concatenate(S_test_parts, axis=0) if S_test_parts else np.empty((0,), dtype=np.int64)
 
-    train_out = pd.concat(train_frames, ignore_index=True) if train_frames else pd.DataFrame(columns=["station", "datetime"] + feature_cols)
-    val_out = pd.concat(val_frames, ignore_index=True) if val_frames else pd.DataFrame(columns=["station", "datetime"] + feature_cols)
-    test_out = pd.concat(test_frames, ignore_index=True) if test_frames else pd.DataFrame(columns=["station", "datetime"] + feature_cols)
-    train_out = train_out[["station", "datetime"] + feature_cols]
-    val_out = val_out[["station", "datetime"] + feature_cols]
-    test_out = test_out[["station", "datetime"] + feature_cols]
+    train_out = (
+        pd.concat(train_frames, ignore_index=True)
+        if train_frames
+        else pd.DataFrame(columns=["station", "datetime"] + numeric_feature_cols)
+    )
+    val_out = (
+        pd.concat(val_frames, ignore_index=True)
+        if val_frames
+        else pd.DataFrame(columns=["station", "datetime"] + numeric_feature_cols)
+    )
+    test_out = (
+        pd.concat(test_frames, ignore_index=True)
+        if test_frames
+        else pd.DataFrame(columns=["station", "datetime"] + numeric_feature_cols)
+    )
+    train_out = train_out[["station", "datetime"] + numeric_feature_cols]
+    val_out = val_out[["station", "datetime"] + numeric_feature_cols]
+    test_out = test_out[["station", "datetime"] + numeric_feature_cols]
     train_out.to_csv(out_data_station / "train_data.csv", index=False)
     val_out.to_csv(out_data_station / "val_data.csv", index=False)
     test_out.to_csv(out_data_station / "test_data.csv", index=False)
@@ -325,6 +373,11 @@ def prepare_station_datasets(
         X_val_masked = mask_windows(X_val_ori, missing_rate=missing_rate, seed=seed)
     else:
         raise ValueError(f"Unsupported mask_mode: {mask_mode}")
+    X_val_masked = _restore_never_mask_features(
+        X_val_masked,
+        X_val_ori,
+        never_mask_feature_indices=never_mask_feature_indices,
+    )
 
     np.savez_compressed(
         out_data_station / "windows.npz",
@@ -347,6 +400,6 @@ def prepare_station_datasets(
         "S_val": S_val,
         "S_test": S_test,
         "n_stations": len(station_names),
-        "feature_cols": feature_cols,
+        "feature_cols": model_feature_cols,
         "windows_path": out_data_station / "windows.npz",
     }

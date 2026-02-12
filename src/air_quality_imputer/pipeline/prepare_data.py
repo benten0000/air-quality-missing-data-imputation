@@ -14,11 +14,9 @@ def run(cfg: DictConfig) -> None:
     processed_dir = Path(cfg.paths.processed_dir)
     scalers_dir = Path(cfg.paths.scalers_dir)
 
-    requested_features = list(cfg.experiment.features)
-    features = [feature for feature in requested_features if feature != "station"]
+    features = list(cfg.experiment.features)
     never_mask_features = list(cfg.experiment.never_mask_features)
-    never_mask_features_set = set(never_mask_features)
-    never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in never_mask_features_set]
+    never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in set(never_mask_features)]
 
     block_missing_prob_raw = cfg.experiment.block_missing_prob
     block_missing_prob = None if block_missing_prob_raw is None else float(block_missing_prob_raw)

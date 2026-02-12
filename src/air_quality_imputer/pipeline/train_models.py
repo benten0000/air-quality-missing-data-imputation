@@ -49,8 +49,7 @@ def run(cfg: DictConfig) -> None:
     processed_dir = Path(cfg.paths.processed_dir)
     models_dir = Path(cfg.paths.models_dir)
 
-    requested_features = list(cfg.experiment.features)
-    features = [feature for feature in requested_features if feature != "station"]
+    features = list(cfg.experiment.features)
     never_mask_features = list(cfg.experiment.never_mask_features)
     never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in set(never_mask_features)]
 
@@ -125,9 +124,29 @@ def run(cfg: DictConfig) -> None:
                     },
                     model_path,
                 )
-                tracker.log_artifact(model_path, artifact_path="model/files")
-                logged_model = tracker.log_torch_model(model, artifact_path="model/mlflow")
-                tracker.set_tags({"logged_model": str(bool(logged_model)).lower()})
+                artifact_root = f"runs/train/{model_name}/{station}/seed-{run_seed}"
+                tracker.log_artifact(model_path, artifact_path=f"{artifact_root}/checkpoint")
+                mlflow_model_name = f"{model_name}-{station}-seed-{run_seed}"
+                registered_model_name = tracker.build_registered_model_name(model_name=model_name, station=station)
+                logged_model = tracker.log_torch_model(
+                    model,
+                    artifact_path=f"{artifact_root}/model_torch",
+                    model_name=mlflow_model_name,
+                    registered_model_name=registered_model_name,
+                )
+                if not logged_model:
+                    logged_model = tracker.log_checkpoint_pyfunc_model(
+                        checkpoint_path=model_path,
+                        artifact_path=f"{artifact_root}/model_pyfunc",
+                        model_name=mlflow_model_name,
+                        registered_model_name=registered_model_name,
+                    )
+                tracker.set_tags(
+                    {
+                        "logged_model": str(bool(logged_model)).lower(),
+                        "registered_model_name": registered_model_name,
+                    }
+                )
 
                 best_loss = None
                 if isinstance(fit_stats, dict):

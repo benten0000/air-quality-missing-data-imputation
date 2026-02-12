@@ -76,8 +76,8 @@ stages:
     deps:
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: 2c89ffe099815b040c6c21b3343b3169
-      size: 1971
+      md5: a9d5b0e4256b5f2e0e41be80e401ebcb
+      size: 2450
     - path: data/processed/scalers
       hash: md5
       md5: e5b6ace05440a4559bcdf5bffe49d04d.dir
@@ -85,13 +85,13 @@ stages:
       nfiles: 1
     - path: data/processed/splits
       hash: md5
-      md5: c9a437b928abc1a95f35b7410542573a.dir
-      size: 26938470
+      md5: 0c2f67567faf8ea78b78828ab6457a20.dir
+      size: 28484460
       nfiles: 5
     - path: src/air_quality_imputer/models
       hash: md5
-      md5: 373e36646fe03c47e76503e6994398c8.dir
-      size: 27022
+      md5: 586232ceb3b01c2f291417467fae6e92.dir
+      size: 30011
       nfiles: 4
     - path: src/air_quality_imputer/pipeline/common.py
       hash: md5
@@ -99,12 +99,12 @@ stages:
       size: 2206
     - path: src/air_quality_imputer/pipeline/train_models.py
       hash: md5
-      md5: 9c6a03eb151d6e3fde294512b20ce615
-      size: 5791
+      md5: d686ec7ee69012e1dfaef1b05818e0af
+      size: 5969
     - path: src/air_quality_imputer/tracking/mlflow_utils.py
       hash: md5
-      md5: 22f21aaf5222828d2c0204615f8e03dc
-      size: 5233
+      md5: 74d2691914edd63b52b71fff6140056e
+      size: 5796
     - path: src/air_quality_imputer/training/model_registry.py
       hash: md5
       md5: a7907802ba9659c5dd3add24b76b82f4
@@ -139,7 +139,7 @@ stages:
               dataloader_prefetch_factor: 4
               dataloader_persistent_workers: true
               dataloader_pin_memory: true
-              train_mask_mode: block_feature
+              train_mask_mode: random
               train_missing_rate: 0.2
               train_block_min_len: 2
               train_block_max_len: 14
@@ -154,8 +154,24 @@ stages:
               n_layers: 3
               n_head: 4
               dropout: 0.1
-              ORT_weight: 1
-              MIT_weight: 1
+              attn_dropout: 0.1
+              diagonal_attention_mask: true
+              d_ffn: 512
+              ORT_weight: 1.0
+              MIT_weight: 1.0
+              training_loss: MAE
+              validation_metric: MSE
+              num_workers: 0
+              saving_path:
+              model_saving_strategy: best
+              verbose: true
+              optimizer: adam
+              optimizer_weight_decay: 0.01
+              optimizer_betas:
+              - 0.9
+              - 0.999
+              optimizer_eps: 1e-08
+              learning_rate:
         paths.models_dir: artifacts/models
         tracking:
           enabled: true
@@ -171,8 +187,8 @@ stages:
     outs:
     - path: artifacts/models
       hash: md5
-      md5: 071bcdb61113c90b20bd2022418be073.dir
-      size: 24550404
+      md5: 26ccc85c7acc9d410252c99b8cc96fd1.dir
+      size: 24552516
       nfiles: 2
   evaluate_models:
     cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.evaluate_models 
@@ -180,22 +196,22 @@ stages:
     deps:
     - path: artifacts/models
       hash: md5
-      md5: 071bcdb61113c90b20bd2022418be073.dir
-      size: 24550404
+      md5: 26ccc85c7acc9d410252c99b8cc96fd1.dir
+      size: 24552516
       nfiles: 2
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: 2c89ffe099815b040c6c21b3343b3169
-      size: 1971
+      md5: a9d5b0e4256b5f2e0e41be80e401ebcb
+      size: 2450
     - path: data/processed/splits
       hash: md5
-      md5: c9a437b928abc1a95f35b7410542573a.dir
-      size: 26938470
+      md5: 0c2f67567faf8ea78b78828ab6457a20.dir
+      size: 28484460
       nfiles: 5
     - path: src/air_quality_imputer/models
       hash: md5
-      md5: 373e36646fe03c47e76503e6994398c8.dir
-      size: 27022
+      md5: 586232ceb3b01c2f291417467fae6e92.dir
+      size: 30011
       nfiles: 4
     - path: src/air_quality_imputer/pipeline/common.py
       hash: md5
@@ -203,12 +219,12 @@ stages:
       size: 2206
     - path: src/air_quality_imputer/pipeline/evaluate_models.py
       hash: md5
-      md5: c6195fa2a39aad9859cd2a27a98f241c
-      size: 17896
+      md5: feb468d1bba78c00ad5d5afb9b9c0c68
+      size: 17946
     - path: src/air_quality_imputer/tracking/mlflow_utils.py
       hash: md5
-      md5: 22f21aaf5222828d2c0204615f8e03dc
-      size: 5233
+      md5: 74d2691914edd63b52b71fff6140056e
+      size: 5796
     - path: src/air_quality_imputer/training/data_utils.py
       hash: md5
       md5: 9ca1379dcb7d9a1d4a524e7eb94fe72a
@@ -242,7 +258,7 @@ stages:
           step_size: 1
           missing_rate: 0.2
           seed: 42
-          mask_mode: block_feature
+          mask_mode: random
           block_min_len: 2
           block_max_len: 14
           block_missing_prob: 0.35
@@ -272,7 +288,7 @@ stages:
               dataloader_prefetch_factor: 4
               dataloader_persistent_workers: true
               dataloader_pin_memory: true
-              train_mask_mode: block_feature
+              train_mask_mode: random
               train_missing_rate: 0.2
               train_block_min_len: 2
               train_block_max_len: 14
@@ -287,8 +303,24 @@ stages:
               n_layers: 3
               n_head: 4
               dropout: 0.1
-              ORT_weight: 1
-              MIT_weight: 1
+              attn_dropout: 0.1
+              diagonal_attention_mask: true
+              d_ffn: 512
+              ORT_weight: 1.0
+              MIT_weight: 1.0
+              training_loss: MAE
+              validation_metric: MSE
+              num_workers: 0
+              saving_path:
+              model_saving_strategy: best
+              verbose: true
+              optimizer: adam
+              optimizer_weight_decay: 0.01
+              optimizer_betas:
+              - 0.9
+              - 0.999
+              optimizer_eps: 1e-08
+              learning_rate:
         paths.metrics_dir: reports/metrics
         paths.plots_dir: reports/plots/model_eval
         paths.reports_dir: reports/model_eval
@@ -300,19 +332,19 @@ stages:
     outs:
     - path: reports/metrics/model_eval_metrics.json
       hash: md5
-      md5: 59d668263afd97baf9c9760f770c55cd
-      size: 407
+      md5: 7ba21fc0f64749efff067c97e4f60775
+      size: 409
     - path: reports/metrics/summary_by_feature_for_dvc_plots.csv
       hash: md5
-      md5: c5b45e31ed5f265a78a6e30ddaf578af
-      size: 1284
+      md5: 6a58aaaf7b545817969c93c9f2fafbb4
+      size: 1288
     - path: reports/model_eval
       hash: md5
-      md5: 0e5de1aeadb5248e7785e8d189a75886.dir
-      size: 4405
+      md5: d7740a58f2f3438f3a4f75029ebb84e3.dir
+      size: 4423
       nfiles: 10
     - path: reports/plots/model_eval
       hash: md5
-      md5: 27399699c565a7473373d8dd5a0a3169.dir
-      size: 100844
+      md5: eccbad813ce9b464192c4ecb5877f5f5.dir
+      size: 94126
       nfiles: 2

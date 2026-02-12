@@ -55,6 +55,16 @@ def _clean_metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
     return cleaned
 
 
+def _slug(value: str) -> str:
+    out = []
+    for ch in value.strip().lower():
+        out.append(ch if ch.isalnum() else "-")
+    slug = "".join(out).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "model"
+
+
 class MLflowTracker:
     """Small wrapper over MLflow with safe no-op fallback."""
 
@@ -147,7 +157,13 @@ class MLflowTracker:
         if self.enabled:
             self._client().set_tags({k: str(v) for k, v in tags.items()})
 
-    def log_torch_model(self, model: Any, artifact_path: str) -> bool:
+    def log_torch_model(
+        self,
+        model: Any,
+        artifact_path: str,
+        model_name: str | None = None,
+        registered_model_name: str | None = None,
+    ) -> bool:
         if not self.enabled:
             return False
         try:
@@ -155,8 +171,77 @@ class MLflowTracker:
             if not isinstance(model, nn.Module):
                 return False
             mlflow_pytorch = importlib.import_module("mlflow.pytorch")
-            mlflow_pytorch.log_model(model, artifact_path=artifact_path)
+            kwargs: dict[str, Any] = {}
+            if model_name:
+                kwargs["name"] = str(model_name)
+            if registered_model_name:
+                kwargs["registered_model_name"] = str(registered_model_name)
+            mlflow_pytorch.log_model(model, artifact_path=artifact_path, **kwargs)
             return True
         except Exception as exc:
             print(f"[WARN] Failed to log MLflow torch model: {exc}")
             return False
+
+    def log_checkpoint_pyfunc_model(
+        self,
+        checkpoint_path: Path | str,
+        artifact_path: str,
+        model_name: str | None = None,
+        registered_model_name: str | None = None,
+    ) -> bool:
+        if not self.enabled:
+            return False
+        ckpt = Path(checkpoint_path)
+        if not ckpt.exists():
+            return False
+        try:
+            pyfunc = importlib.import_module("mlflow.pyfunc")
+
+            class _CheckpointPyfunc(pyfunc.PythonModel):  # type: ignore[misc,valid-type]
+                def load_context(self, context):  # type: ignore[no-untyped-def]
+                    import torch
+                    from air_quality_imputer.training.model_registry import build_model_from_checkpoint
+
+                    payload = torch.load(context.artifacts["checkpoint"], map_location=torch.device("cpu"), weights_only=False)
+                    self._model = build_model_from_checkpoint(str(payload["model_type"]), payload["config_dict"])
+                    self._model.load_state_dict(payload["state_dict"])
+                    self._model.to(torch.device("cpu"))
+                    self._model.eval()
+
+                def predict(self, context, model_input, params=None):  # type: ignore[no-untyped-def]
+                    del context, params
+                    import numpy as np
+                    import pandas as pd
+
+                    x: Any
+                    if isinstance(model_input, pd.DataFrame):
+                        x = model_input.to_numpy(dtype=np.float32)
+                    else:
+                        x = np.asarray(model_input, dtype=np.float32)
+                    if x.ndim == 2:
+                        x = x[None, :, :]
+                    if x.ndim != 3:
+                        raise ValueError(f"Expected [batch, steps, features], got shape {x.shape}")
+                    y = self._model.impute({"X": x})
+                    if y is None:
+                        raise RuntimeError("Model impute returned None")
+                    return y
+
+            kwargs: dict[str, Any] = {}
+            if model_name:
+                kwargs["name"] = str(model_name)
+            if registered_model_name:
+                kwargs["registered_model_name"] = str(registered_model_name)
+            pyfunc.log_model(
+                artifact_path=artifact_path,
+                python_model=_CheckpointPyfunc(),
+                artifacts={"checkpoint": str(ckpt)},
+                **kwargs,
+            )
+            return True
+        except Exception as exc:
+            print(f"[WARN] Failed to log MLflow pyfunc model from checkpoint: {exc}")
+            return False
+
+    def build_registered_model_name(self, model_name: str, station: str) -> str:
+        return f"aqi-{_slug(model_name)}-{_slug(station)}"
