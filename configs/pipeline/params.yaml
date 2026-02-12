@@ -15,8 +15,8 @@ experiment:
   block_no_overlap: true
 
 training:
-  epochs: 120
-  batch_size: 128
+  epochs: 100
+  batch_size: 256
   lr: 0.0008
   patience: 20
   min_delta: 0.0001
@@ -100,3 +100,4 @@ tracking:
   repo_owner: PetelinekBenjamin
   repo_name: air-quality-missing-data-imputation
   experiment_name: air-quality-imputer
+  register_models: true

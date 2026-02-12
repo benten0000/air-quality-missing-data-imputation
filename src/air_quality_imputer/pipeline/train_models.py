@@ -39,6 +39,7 @@ def _load_windows(processed_dir: Path, station: str) -> dict[str, Any]:
         "S_train": windows["S_train"].astype(np.int64),
         "S_val": windows["S_val"].astype(np.int64),
         "n_stations": int(len(station_names)),
+        "windows_path": windows_path,
     }
 
 
@@ -96,6 +97,16 @@ def run(cfg: DictConfig) -> None:
             }
 
             with tracker.start_run(run_name=run_name, tags=tags):
+                tracker.log_input_dataset(
+                    name=f"prepared-{station}",
+                    source=str(prepared["windows_path"]),
+                    context="training",
+                    preview={
+                        "station": station,
+                        "n_train_windows": int(prepared["X_train"].shape[0]),
+                        "n_features": int(prepared["X_train"].shape[2]) if prepared["X_train"].ndim == 3 else 0,
+                    },
+                )
                 tracker.log_params(to_plain_dict(cfg.experiment), prefix="experiment")
                 tracker.log_params(to_plain_dict(cfg.training), prefix="training")
                 tracker.log_params(to_plain_dict(model_cfg), prefix=f"models.{model_name}")
@@ -124,29 +135,31 @@ def run(cfg: DictConfig) -> None:
                     },
                     model_path,
                 )
-                artifact_root = f"runs/train/{model_name}/{station}/seed-{run_seed}"
-                tracker.log_artifact(model_path, artifact_path=f"{artifact_root}/checkpoint")
+                tracker.log_artifact(model_path, artifact_path="model/files")
                 mlflow_model_name = f"{model_name}-{station}-seed-{run_seed}"
-                registered_model_name = tracker.build_registered_model_name(model_name=model_name, station=station)
+                registered_model_name = (
+                    tracker.build_registered_model_name(model_name=model_name, station=station)
+                    if tracker.register_models
+                    else None
+                )
                 logged_model = tracker.log_torch_model(
                     model,
-                    artifact_path=f"{artifact_root}/model_torch",
                     model_name=mlflow_model_name,
                     registered_model_name=registered_model_name,
                 )
                 if not logged_model:
                     logged_model = tracker.log_checkpoint_pyfunc_model(
                         checkpoint_path=model_path,
-                        artifact_path=f"{artifact_root}/model_pyfunc",
                         model_name=mlflow_model_name,
                         registered_model_name=registered_model_name,
                     )
-                tracker.set_tags(
-                    {
-                        "logged_model": str(bool(logged_model)).lower(),
-                        "registered_model_name": registered_model_name,
-                    }
-                )
+                tags_payload = {
+                    "logged_model": str(bool(logged_model)).lower(),
+                    "mlflow_model_name": mlflow_model_name,
+                }
+                if registered_model_name:
+                    tags_payload["registered_model_name"] = registered_model_name
+                tracker.set_tags(tags_payload)
 
                 best_loss = None
                 if isinstance(fit_stats, dict):

@@ -71,6 +71,7 @@ class MLflowTracker:
     def __init__(self, tracking_cfg: Mapping[str, Any] | None):
         cfg = dict(tracking_cfg or {})
         self.enabled = bool(cfg.get("enabled", True))
+        self.register_models = bool(cfg.get("register_models", False))
         self._mlflow: Any | None = _mlflow
         self.base_tags = {"git_commit": _git_commit(), "project": "air-quality-imputer"}
         if not self.enabled:
@@ -149,34 +150,50 @@ class MLflowTracker:
         if self.enabled and Path(path).exists():
             self._client().log_artifact(str(path), artifact_path=artifact_path)
 
-    def log_artifacts(self, path: Path | str, artifact_path: str | None = None) -> None:
-        if self.enabled and Path(path).exists():
-            self._client().log_artifacts(str(path), artifact_path=artifact_path)
-
     def set_tags(self, tags: Mapping[str, Any]) -> None:
         if self.enabled:
             self._client().set_tags({k: str(v) for k, v in tags.items()})
 
-    def log_torch_model(
+    def log_input_dataset(
         self,
-        model: Any,
-        artifact_path: str,
-        model_name: str | None = None,
-        registered_model_name: str | None = None,
-    ) -> bool:
+        *,
+        name: str,
+        source: str,
+        context: str,
+        preview: Mapping[str, Any] | None = None,
+    ) -> None:
+        if not self.enabled:
+            return
+        try:
+            import pandas as pd
+
+            mlflow = self._client()
+            dataset_mod = importlib.import_module("mlflow.data")
+            row = dict(preview or {})
+            if not row:
+                row = {"dataset_name": name}
+            dataset = dataset_mod.from_pandas(pd.DataFrame([row]), source=source, name=name)
+            mlflow.log_input(dataset=dataset, context=context)
+        except Exception as exc:
+            print(f"[WARN] Failed to log MLflow input dataset: {exc}")
+
+    def log_torch_model(self, model: Any, model_name: str, registered_model_name: str | None = None) -> bool:
         if not self.enabled:
             return False
         try:
             import torch.nn as nn
+
             if not isinstance(model, nn.Module):
                 return False
             mlflow_pytorch = importlib.import_module("mlflow.pytorch")
-            kwargs: dict[str, Any] = {}
-            if model_name:
-                kwargs["name"] = str(model_name)
+            kwargs: dict[str, Any] = {"name": str(model_name)}
             if registered_model_name:
-                kwargs["registered_model_name"] = str(registered_model_name)
-            mlflow_pytorch.log_model(model, artifact_path=artifact_path, **kwargs)
+                try:
+                    mlflow_pytorch.log_model(model, registered_model_name=str(registered_model_name), **kwargs)
+                    return True
+                except Exception as exc:
+                    print(f"[WARN] Model registry logging failed, retrying without registry: {exc}")
+            mlflow_pytorch.log_model(model, **kwargs)
             return True
         except Exception as exc:
             print(f"[WARN] Failed to log MLflow torch model: {exc}")
@@ -185,8 +202,7 @@ class MLflowTracker:
     def log_checkpoint_pyfunc_model(
         self,
         checkpoint_path: Path | str,
-        artifact_path: str,
-        model_name: str | None = None,
+        model_name: str,
         registered_model_name: str | None = None,
     ) -> bool:
         if not self.enabled:
@@ -227,17 +243,18 @@ class MLflowTracker:
                         raise RuntimeError("Model impute returned None")
                     return y
 
-            kwargs: dict[str, Any] = {}
-            if model_name:
-                kwargs["name"] = str(model_name)
+            payload: dict[str, Any] = {
+                "name": str(model_name),
+                "python_model": _CheckpointPyfunc(),
+                "artifacts": {"checkpoint": str(ckpt)},
+            }
             if registered_model_name:
-                kwargs["registered_model_name"] = str(registered_model_name)
-            pyfunc.log_model(
-                artifact_path=artifact_path,
-                python_model=_CheckpointPyfunc(),
-                artifacts={"checkpoint": str(ckpt)},
-                **kwargs,
-            )
+                try:
+                    pyfunc.log_model(registered_model_name=str(registered_model_name), **payload)
+                    return True
+                except Exception as exc:
+                    print(f"[WARN] Pyfunc registry logging failed, retrying without registry: {exc}")
+            pyfunc.log_model(**payload)
             return True
         except Exception as exc:
             print(f"[WARN] Failed to log MLflow pyfunc model from checkpoint: {exc}")

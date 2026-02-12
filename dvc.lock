@@ -6,8 +6,8 @@ stages:
     deps:
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: a9d5b0e4256b5f2e0e41be80e401ebcb
-      size: 2450
+      md5: 8626c9ca8cb256801ebebb64ea47d432
+      size: 2471
     - path: data/raw
       hash: md5
       md5: 2e63b05f91bd8adf716e3332c0d18150.dir
@@ -19,12 +19,12 @@ stages:
       size: 2206
     - path: src/air_quality_imputer/pipeline/prepare_data.py
       hash: md5
-      md5: 3fd3aedbb814801b20d4aa728f6bf2a3
-      size: 3307
+      md5: f5955c263874988603cdf9f040812f19
+      size: 3160
     - path: src/air_quality_imputer/training/data_utils.py
       hash: md5
-      md5: 9ca1379dcb7d9a1d4a524e7eb94fe72a
-      size: 14620
+      md5: 9a9eef90399c132f452909ffa717b715
+      size: 16643
     params:
       configs/pipeline/params.yaml:
         experiment:
@@ -67,8 +67,8 @@ stages:
       nfiles: 1
     - path: data/processed/splits
       hash: md5
-      md5: 0c2f67567faf8ea78b78828ab6457a20.dir
-      size: 28484460
+      md5: 320b26433be58f1397fc16ef2914e2f2.dir
+      size: 28592123
       nfiles: 5
   train_models:
     cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.train_models 
@@ -76,8 +76,8 @@ stages:
     deps:
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: a9d5b0e4256b5f2e0e41be80e401ebcb
-      size: 2450
+      md5: 8626c9ca8cb256801ebebb64ea47d432
+      size: 2471
     - path: data/processed/scalers
       hash: md5
       md5: e5b6ace05440a4559bcdf5bffe49d04d.dir
@@ -85,8 +85,8 @@ stages:
       nfiles: 1
     - path: data/processed/splits
       hash: md5
-      md5: 0c2f67567faf8ea78b78828ab6457a20.dir
-      size: 28484460
+      md5: 320b26433be58f1397fc16ef2914e2f2.dir
+      size: 28592123
       nfiles: 5
     - path: src/air_quality_imputer/models
       hash: md5
@@ -99,12 +99,12 @@ stages:
       size: 2206
     - path: src/air_quality_imputer/pipeline/train_models.py
       hash: md5
-      md5: d686ec7ee69012e1dfaef1b05818e0af
-      size: 5969
+      md5: b87cfd5f4bf56640804141e38fce4901
+      size: 7197
     - path: src/air_quality_imputer/tracking/mlflow_utils.py
       hash: md5
-      md5: 74d2691914edd63b52b71fff6140056e
-      size: 5796
+      md5: 59df9e76fbb7ab681271e27eb5afdca6
+      size: 11082
     - path: src/air_quality_imputer/training/model_registry.py
       hash: md5
       md5: a7907802ba9659c5dd3add24b76b82f4
@@ -178,17 +178,18 @@ stages:
           repo_owner: PetelinekBenjamin
           repo_name: air-quality-missing-data-imputation
           experiment_name: air-quality-imputer
+          register_models: true
         training:
-          epochs: 120
+          epochs: 1
           batch_size: 128
           lr: 0.0008
-          patience: 20
+          patience: 0
           min_delta: 0.0001
     outs:
     - path: artifacts/models
       hash: md5
-      md5: 26ccc85c7acc9d410252c99b8cc96fd1.dir
-      size: 24552516
+      md5: 1b02269642dd7197d4a90295cadd148f.dir
+      size: 24567428
       nfiles: 2
   evaluate_models:
     cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.evaluate_models 
@@ -196,17 +197,17 @@ stages:
     deps:
     - path: artifacts/models
       hash: md5
-      md5: 26ccc85c7acc9d410252c99b8cc96fd1.dir
-      size: 24552516
+      md5: 1b02269642dd7197d4a90295cadd148f.dir
+      size: 24567428
       nfiles: 2
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: a9d5b0e4256b5f2e0e41be80e401ebcb
-      size: 2450
+      md5: 8626c9ca8cb256801ebebb64ea47d432
+      size: 2471
     - path: data/processed/splits
       hash: md5
-      md5: 0c2f67567faf8ea78b78828ab6457a20.dir
-      size: 28484460
+      md5: 320b26433be58f1397fc16ef2914e2f2.dir
+      size: 28592123
       nfiles: 5
     - path: src/air_quality_imputer/models
       hash: md5
@@ -219,16 +220,16 @@ stages:
       size: 2206
     - path: src/air_quality_imputer/pipeline/evaluate_models.py
       hash: md5
-      md5: feb468d1bba78c00ad5d5afb9b9c0c68
-      size: 17946
+      md5: 51c5a52e06ab0ed38a74a884eb801613
+      size: 18447
     - path: src/air_quality_imputer/tracking/mlflow_utils.py
       hash: md5
-      md5: 74d2691914edd63b52b71fff6140056e
-      size: 5796
+      md5: 59df9e76fbb7ab681271e27eb5afdca6
+      size: 11082
     - path: src/air_quality_imputer/training/data_utils.py
       hash: md5
-      md5: 9ca1379dcb7d9a1d4a524e7eb94fe72a
-      size: 14620
+      md5: 9a9eef90399c132f452909ffa717b715
+      size: 16643
     - path: src/air_quality_imputer/training/model_registry.py
       hash: md5
       md5: a7907802ba9659c5dd3add24b76b82f4
@@ -329,22 +330,23 @@ stages:
           repo_owner: PetelinekBenjamin
           repo_name: air-quality-missing-data-imputation
           experiment_name: air-quality-imputer
+          register_models: true
     outs:
     - path: reports/metrics/model_eval_metrics.json
       hash: md5
-      md5: 7ba21fc0f64749efff067c97e4f60775
-      size: 409
+      md5: cc067622df5609c1aee9329ca654b2f9
+      size: 410
     - path: reports/metrics/summary_by_feature_for_dvc_plots.csv
       hash: md5
-      md5: 6a58aaaf7b545817969c93c9f2fafbb4
-      size: 1288
+      md5: 5a6b999ed3f3ad94a3bbec5ad87c5892
+      size: 1331
     - path: reports/model_eval
       hash: md5
-      md5: d7740a58f2f3438f3a4f75029ebb84e3.dir
-      size: 4423
+      md5: f6d0eb976a7ee9033189d5720553c4b0.dir
+      size: 4555
       nfiles: 10
     - path: reports/plots/model_eval
       hash: md5
-      md5: eccbad813ce9b464192c4ecb5877f5f5.dir
-      size: 94126
+      md5: 61c5c521e63efed4b03c16881c11f11e.dir
+      size: 99830
       nfiles: 2

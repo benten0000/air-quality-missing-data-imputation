@@ -367,6 +367,16 @@ def run(cfg: DictConfig) -> None:
                 feature_metrics[f"eval.feature.{feature}.rmse"] = row["rmse"]
 
             with tracker.start_run(run_name=run_name, tags=tags):
+                tracker.log_input_dataset(
+                    name=f"prepared-{station}",
+                    source=str(processed_dir / station / "windows.npz"),
+                    context="evaluation",
+                    preview={
+                        "station": station,
+                        "model": model_name,
+                        "mask_mode": mask_mode,
+                    },
+                )
                 tracker.log_params(to_plain_dict(cfg.experiment), prefix="experiment")
                 tracker.log_params(to_plain_dict(model_cfg), prefix=f"models.{model_name}")
                 tracker.log_metrics(
@@ -377,9 +387,8 @@ def run(cfg: DictConfig) -> None:
                     }
                 )
                 tracker.log_metrics(feature_metrics)
-                artifact_root = f"runs/eval/{model_name}/{station}/seed-{run_seed}"
-                tracker.log_artifact(station_overall_path, artifact_path=f"{artifact_root}/metrics")
-                tracker.log_artifact(station_feature_path, artifact_path=f"{artifact_root}/metrics")
+                tracker.log_artifact(station_overall_path, artifact_path=f"evaluation/{station}")
+                tracker.log_artifact(station_feature_path, artifact_path=f"evaluation/{station}")
 
             print(
                 f"[eval] {model_name}/{station}: "
@@ -421,13 +430,12 @@ def run(cfg: DictConfig) -> None:
             "mask_mode": mask_mode,
         },
     ):
-        artifact_root = f"runs/eval/summary/all/seed-{base_seed}"
-        tracker.log_artifact(summary_overall_path, artifact_path=f"{artifact_root}/files")
-        tracker.log_artifact(summary_feature_path, artifact_path=f"{artifact_root}/files")
-        tracker.log_artifact(metrics_path, artifact_path=f"{artifact_root}/files")
-        tracker.log_artifact(plots_source_path, artifact_path=f"{artifact_root}/files")
+        tracker.log_artifact(summary_overall_path, artifact_path="summary/files")
+        tracker.log_artifact(summary_feature_path, artifact_path="summary/files")
+        tracker.log_artifact(metrics_path, artifact_path="summary/files")
+        tracker.log_artifact(plots_source_path, artifact_path="summary/files")
         for plot_path in plot_paths:
-            tracker.log_artifact(plot_path, artifact_path=f"{artifact_root}/plots")
+            tracker.log_artifact(plot_path, artifact_path="plots")
 
     print(f"[eval] Saved summary: {summary_overall_path}")
     print(f"[eval] Saved summary: {summary_feature_path}")
