@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import os
 import subprocess
 from pathlib import Path
@@ -11,6 +12,11 @@ try:
     import mlflow as _mlflow
 except Exception:  # pragma: no cover - exercised in tests with monkeypatch
     _mlflow = None
+
+try:
+    import dagshub as _dagshub
+except Exception:  # pragma: no cover - optional dependency
+    _dagshub = None
 
 
 def _git_commit() -> str:
@@ -63,12 +69,35 @@ class MLflowTracker:
             print("[WARN] MLflow is not installed, tracking is disabled.")
             self.enabled = False
             return
+        if _dagshub is None:
+            print("[WARN] dagshub package is not installed, tracking is disabled.")
+            self.enabled = False
+            return
 
         mlflow = self._client()
-        tracking_uri = cfg.get("tracking_uri") or os.getenv("MLFLOW_TRACKING_URI")
-        if tracking_uri:
-            mlflow.set_tracking_uri(tracking_uri)
-        mlflow.set_experiment(str(cfg.get("experiment_name", "air-quality-imputer")))
+        self._init_dagshub(cfg)
+        try:
+            mlflow.set_experiment(str(cfg.get("experiment_name", "air-quality-imputer")))
+        except Exception as exc:
+            print(f"[WARN] MLflow init failed, disabling tracking: {exc}")
+            self.enabled = False
+
+    def _init_dagshub(self, cfg: Mapping[str, Any]) -> None:
+        if _dagshub is None:
+            print("[WARN] dagshub package is not installed, skipping dagshub.init.")
+            return
+        repo_owner = cfg.get("repo_owner") or os.getenv("DAGSHUB_REPO_OWNER")
+        repo_name = cfg.get("repo_name") or os.getenv("DAGSHUB_REPO_NAME")
+        if not repo_owner or not repo_name:
+            raise RuntimeError("Missing repo_owner/repo_name for dagshub.init.")
+        try:
+            _dagshub.init(  # pyright: ignore[reportPrivateImportUsage]
+                repo_owner=str(repo_owner),
+                repo_name=str(repo_name),
+                mlflow=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"dagshub.init failed: {exc}") from exc
 
     def _client(self) -> Any:
         if self._mlflow is None:
@@ -117,3 +146,17 @@ class MLflowTracker:
     def set_tags(self, tags: Mapping[str, Any]) -> None:
         if self.enabled:
             self._client().set_tags({k: str(v) for k, v in tags.items()})
+
+    def log_torch_model(self, model: Any, artifact_path: str) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            import torch.nn as nn
+            if not isinstance(model, nn.Module):
+                return False
+            mlflow_pytorch = importlib.import_module("mlflow.pytorch")
+            mlflow_pytorch.log_model(model, artifact_path=artifact_path)
+            return True
+        except Exception as exc:
+            print(f"[WARN] Failed to log MLflow torch model: {exc}")
+            return False

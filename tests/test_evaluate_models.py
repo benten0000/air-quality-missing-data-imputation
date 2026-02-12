@@ -35,6 +35,7 @@ class EvaluateModelsTests(unittest.TestCase):
                         "processed_dir": str(root / "data" / "processed" / "splits"),
                         "reports_dir": str(root / "reports" / "model_eval"),
                         "plots_dir": str(root / "reports" / "plots" / "model_eval"),
+                        "metrics_dir": str(root / "reports" / "metrics"),
                     },
                     "tracking": {"enabled": False},
                     "models": {
@@ -63,7 +64,7 @@ class EvaluateModelsTests(unittest.TestCase):
                 with patch("air_quality_imputer.pipeline.evaluate_models.save_eval_plots", return_value=[]):
                     run(cfg)
 
-            metrics_path = root / "reports" / "model_eval" / "metrics.json"
+            metrics_path = root / "reports" / "metrics" / "model_eval_metrics.json"
             self.assertTrue(metrics_path.exists())
             payload = json.loads(metrics_path.read_text(encoding="utf-8"))
             self.assertIn("models", payload)

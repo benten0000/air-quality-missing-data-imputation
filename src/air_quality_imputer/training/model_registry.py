@@ -1,5 +1,4 @@
 from dataclasses import asdict, is_dataclass
-from pathlib import Path
 from typing import Any, Mapping, cast
 
 from omegaconf import DictConfig, OmegaConf
@@ -85,19 +84,3 @@ def config_to_dict(model_config) -> dict[str, Any]:
     if isinstance(model_config, Mapping):
         return _mapping_to_str_key_dict(model_config)
     raise TypeError(f"Unsupported model_config type: {type(model_config)!r}")
-
-
-def load_model_cfg_by_name(model_name: str) -> DictConfig:
-    legacy_path = Path(__file__).resolve().parent / "conf" / "model" / f"{model_name}.yaml"
-    repo_root = Path(__file__).resolve().parents[3]
-    centralized_path = repo_root / "configs" / "legacy" / "hydra" / "model" / f"{model_name}.yaml"
-    model_cfg_path = centralized_path if centralized_path.exists() else legacy_path
-    if not model_cfg_path.exists():
-        raise FileNotFoundError(
-            f"Missing model config for {model_name!r}. "
-            f"Tried: {centralized_path} and {legacy_path}"
-        )
-    cfg = OmegaConf.load(model_cfg_path)
-    if not isinstance(cfg, DictConfig):
-        raise TypeError(f"Expected DictConfig from {model_cfg_path}, got {type(cfg)!r}")
-    return cfg

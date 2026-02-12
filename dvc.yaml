@@ -8,7 +8,11 @@ stages:
       - configs/pipeline/params.yaml
       - data/raw
     params:
-      - configs/pipeline/params.yaml
+      - configs/pipeline/params.yaml:
+          - experiment
+          - paths.data_dir
+          - paths.processed_dir
+          - paths.scalers_dir
     outs:
       - data/processed/splits
       - data/processed/scalers
@@ -25,7 +29,13 @@ stages:
       - data/processed/splits
       - data/processed/scalers
     params:
-      - configs/pipeline/params.yaml
+      - configs/pipeline/params.yaml:
+          - experiment.models
+          - experiment.seed
+          - training
+          - models
+          - paths.models_dir
+          - tracking
     outs:
       - artifacts/models
 
@@ -42,11 +52,17 @@ stages:
       - data/processed/splits
       - artifacts/models
     params:
-      - configs/pipeline/params.yaml
+      - configs/pipeline/params.yaml:
+          - experiment
+          - models
+          - paths.reports_dir
+          - paths.plots_dir
+          - paths.metrics_dir
+          - tracking
     outs:
       - reports/model_eval
       - reports/plots/model_eval
     metrics:
-      - reports/model_eval/metrics.json
+      - reports/metrics/model_eval_metrics.json
     plots:
-      - reports/model_eval/summary_by_feature.csv
+      - reports/metrics/summary_by_feature_for_dvc_plots.csv

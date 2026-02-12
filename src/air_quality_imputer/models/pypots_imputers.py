@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import inspect
 from typing import Any
 
 import numpy as np
@@ -74,9 +75,22 @@ class SAITSConfig:
     d_model: int = 128
     n_head: int = 4
     dropout: float = 0.1
+    attn_dropout: float = 0.0
+    diagonal_attention_mask: bool = True
     d_ffn: int | None = None
-    ORT_weight: int = 1
-    MIT_weight: int = 1
+    ORT_weight: float = 1.0
+    MIT_weight: float = 1.0
+    learning_rate: float | None = None
+    training_loss: str = "MAE"
+    validation_metric: str = "MSE"
+    num_workers: int = 0
+    saving_path: str | None = None
+    model_saving_strategy: str | None = "best"
+    verbose: bool = True
+    optimizer: str = "adam"
+    optimizer_weight_decay: float = 0.0
+    optimizer_betas: list[float] | None = None
+    optimizer_eps: float | None = None
 
 
 class SAITSImputer(_PyPOTSBase):
@@ -85,9 +99,53 @@ class SAITSImputer(_PyPOTSBase):
         self.config = config
         self._build_model(epochs=300, batch_size=128, patience=250, lr=1e-3)
 
+    @staticmethod
+    def _filtered_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+        params = inspect.signature(callable_obj).parameters
+        return {key: value for key, value in kwargs.items() if key in params and value is not None}
+
+    def _build_optimizer(self, lr: float):
+        effective_lr = float(self.config.learning_rate) if self.config.learning_rate is not None else float(lr)
+        optimizer_name = str(self.config.optimizer).lower()
+        common_kwargs: dict[str, Any] = {
+            "lr": effective_lr,
+            "weight_decay": float(self.config.optimizer_weight_decay),
+            "eps": self.config.optimizer_eps,
+        }
+        if self.config.optimizer_betas is not None and len(self.config.optimizer_betas) == 2:
+            common_kwargs["betas"] = tuple(float(x) for x in self.config.optimizer_betas)
+
+        if optimizer_name == "adam":
+            from pypots.optim.adam import Adam
+
+            return Adam(**self._filtered_kwargs(Adam, common_kwargs))
+        if optimizer_name == "adamw":
+            try:
+                from pypots.optim.adamw import AdamW
+            except Exception as exc:
+                raise ValueError("optimizer=adamw is not available in current PyPOTS installation.") from exc
+            return AdamW(**self._filtered_kwargs(AdamW, common_kwargs))
+        raise ValueError(f"Unsupported SAITS optimizer: {self.config.optimizer}")
+
+    @staticmethod
+    def _resolve_criterion(name: str):
+        from pypots.nn.modules import loss as loss_mod
+
+        allowed = {
+            "MAE": loss_mod.MAE,
+            "MSE": loss_mod.MSE,
+            "RMSE": loss_mod.RMSE,
+            "MRE": loss_mod.MRE,
+            "NLL": loss_mod.NLL,
+            "CROSSENTROPY": loss_mod.CrossEntropy,
+        }
+        key = str(name).replace("-", "").replace("_", "").upper()
+        if key not in allowed:
+            raise ValueError(f"Unsupported SAITS criterion: {name}. Allowed: {sorted(allowed.keys())}")
+        return allowed[key]
+
     def _build_model(self, epochs: int, batch_size: int, patience: int, lr: float) -> None:
         from pypots.imputation import SAITS
-        from pypots.optim.adam import Adam
 
         d_k = self.config.d_model // self.config.n_head
         d_v = self.config.d_model // self.config.n_head
@@ -101,13 +159,21 @@ class SAITSImputer(_PyPOTSBase):
             d_v=d_v,
             d_ffn=self.config.d_ffn or (4 * self.config.d_model),
             dropout=self.config.dropout,
+            attn_dropout=self.config.attn_dropout,
+            diagonal_attention_mask=self.config.diagonal_attention_mask,
             ORT_weight=self.config.ORT_weight,
             MIT_weight=self.config.MIT_weight,
             batch_size=batch_size,
             epochs=epochs,
             patience=patience,
-            optimizer=Adam(lr=lr),
+            training_loss=self._resolve_criterion(self.config.training_loss),
+            validation_metric=self._resolve_criterion(self.config.validation_metric),
+            optimizer=self._build_optimizer(lr=lr),
+            num_workers=int(self.config.num_workers),
             device=self._device_name(),
+            saving_path=self.config.saving_path,
+            model_saving_strategy=self.config.model_saving_strategy,
+            verbose=bool(self.config.verbose),
         )
 
     def fit(

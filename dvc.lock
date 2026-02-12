@@ -1,0 +1,318 @@
+schema: '2.0'
+stages:
+  prepare_data:
+    cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.prepare_data 
+      --params configs/pipeline/params.yaml
+    deps:
+    - path: configs/pipeline/params.yaml
+      hash: md5
+      md5: a9d5b0e4256b5f2e0e41be80e401ebcb
+      size: 2450
+    - path: data/raw
+      hash: md5
+      md5: 2e63b05f91bd8adf716e3332c0d18150.dir
+      size: 39174879
+      nfiles: 22
+    - path: src/air_quality_imputer/pipeline/common.py
+      hash: md5
+      md5: e871b431d547437f5fd847772b1521f0
+      size: 2206
+    - path: src/air_quality_imputer/pipeline/prepare_data.py
+      hash: md5
+      md5: 3fd3aedbb814801b20d4aa728f6bf2a3
+      size: 3307
+    - path: src/air_quality_imputer/training/data_utils.py
+      hash: md5
+      md5: 9ca1379dcb7d9a1d4a524e7eb94fe72a
+      size: 14620
+    params:
+      configs/pipeline/params.yaml:
+        experiment:
+          stations:
+          - all_stations
+          models:
+          - transformer
+          - saits
+          features:
+          - station
+          - PM10
+          - PM2.5
+          - temperature
+          - rain
+          - pressure
+          - precipitation
+          - wind_speed
+          - clouds
+          - wind_direction
+          never_mask_features:
+          - station
+          block_size: 24
+          step_size: 1
+          missing_rate: 0.2
+          seed: 42
+          mask_mode: random
+          block_min_len: 2
+          block_max_len: 14
+          block_missing_prob: 0.35
+          feature_block_prob: 0.6
+          block_no_overlap: true
+        paths.data_dir: data/raw
+        paths.processed_dir: data/processed/splits
+        paths.scalers_dir: data/processed/scalers
+    outs:
+    - path: data/processed/scalers
+      hash: md5
+      md5: e5b6ace05440a4559bcdf5bffe49d04d.dir
+      size: 783
+      nfiles: 1
+    - path: data/processed/splits
+      hash: md5
+      md5: 0c2f67567faf8ea78b78828ab6457a20.dir
+      size: 28484460
+      nfiles: 5
+  train_models:
+    cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.train_models 
+      --params configs/pipeline/params.yaml
+    deps:
+    - path: configs/pipeline/params.yaml
+      hash: md5
+      md5: 2c89ffe099815b040c6c21b3343b3169
+      size: 1971
+    - path: data/processed/scalers
+      hash: md5
+      md5: e5b6ace05440a4559bcdf5bffe49d04d.dir
+      size: 783
+      nfiles: 1
+    - path: data/processed/splits
+      hash: md5
+      md5: c9a437b928abc1a95f35b7410542573a.dir
+      size: 26938470
+      nfiles: 5
+    - path: src/air_quality_imputer/models
+      hash: md5
+      md5: 373e36646fe03c47e76503e6994398c8.dir
+      size: 27022
+      nfiles: 4
+    - path: src/air_quality_imputer/pipeline/common.py
+      hash: md5
+      md5: e871b431d547437f5fd847772b1521f0
+      size: 2206
+    - path: src/air_quality_imputer/pipeline/train_models.py
+      hash: md5
+      md5: 9c6a03eb151d6e3fde294512b20ce615
+      size: 5791
+    - path: src/air_quality_imputer/tracking/mlflow_utils.py
+      hash: md5
+      md5: 22f21aaf5222828d2c0204615f8e03dc
+      size: 5233
+    - path: src/air_quality_imputer/training/model_registry.py
+      hash: md5
+      md5: a7907802ba9659c5dd3add24b76b82f4
+      size: 3110
+    params:
+      configs/pipeline/params.yaml:
+        experiment.models:
+        - transformer
+        - saits
+        experiment.seed: 42
+        models:
+          transformer:
+            type: classic_transformer
+            checkpoint_name: transformer.pt
+            params:
+              d_model: 128
+              n_layer: 3
+              n_head: 4
+              dropout: 0.1
+              bias: true
+              norm_eps: 1e-06
+              use_torch_compile: true
+              compile_mode: reduce-overhead
+              compile_dynamic: false
+              optimizer_fused: true
+              optimizer_weight_decay: 0.01
+              scheduler_warmup_ratio: 0.125
+              scheduler_warmup_start_factor: 0.3
+              scheduler_min_lr: 1e-07
+              grad_clip_norm: 0.5
+              dataloader_num_workers: -1
+              dataloader_prefetch_factor: 4
+              dataloader_persistent_workers: true
+              dataloader_pin_memory: true
+              train_mask_mode: block_feature
+              train_missing_rate: 0.2
+              train_block_min_len: 2
+              train_block_max_len: 14
+              train_block_missing_prob: 0.35
+              train_feature_block_prob: 0.6
+              train_block_no_overlap: true
+          saits:
+            type: saits
+            checkpoint_name: saits.pt
+            params:
+              d_model: 128
+              n_layers: 3
+              n_head: 4
+              dropout: 0.1
+              ORT_weight: 1
+              MIT_weight: 1
+        paths.models_dir: artifacts/models
+        tracking:
+          enabled: true
+          repo_owner: PetelinekBenjamin
+          repo_name: air-quality-missing-data-imputation
+          experiment_name: air-quality-imputer
+        training:
+          epochs: 120
+          batch_size: 128
+          lr: 0.0008
+          patience: 20
+          min_delta: 0.0001
+    outs:
+    - path: artifacts/models
+      hash: md5
+      md5: 071bcdb61113c90b20bd2022418be073.dir
+      size: 24550404
+      nfiles: 2
+  evaluate_models:
+    cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.evaluate_models 
+      --params configs/pipeline/params.yaml
+    deps:
+    - path: artifacts/models
+      hash: md5
+      md5: 071bcdb61113c90b20bd2022418be073.dir
+      size: 24550404
+      nfiles: 2
+    - path: configs/pipeline/params.yaml
+      hash: md5
+      md5: 2c89ffe099815b040c6c21b3343b3169
+      size: 1971
+    - path: data/processed/splits
+      hash: md5
+      md5: c9a437b928abc1a95f35b7410542573a.dir
+      size: 26938470
+      nfiles: 5
+    - path: src/air_quality_imputer/models
+      hash: md5
+      md5: 373e36646fe03c47e76503e6994398c8.dir
+      size: 27022
+      nfiles: 4
+    - path: src/air_quality_imputer/pipeline/common.py
+      hash: md5
+      md5: e871b431d547437f5fd847772b1521f0
+      size: 2206
+    - path: src/air_quality_imputer/pipeline/evaluate_models.py
+      hash: md5
+      md5: c6195fa2a39aad9859cd2a27a98f241c
+      size: 17896
+    - path: src/air_quality_imputer/tracking/mlflow_utils.py
+      hash: md5
+      md5: 22f21aaf5222828d2c0204615f8e03dc
+      size: 5233
+    - path: src/air_quality_imputer/training/data_utils.py
+      hash: md5
+      md5: 9ca1379dcb7d9a1d4a524e7eb94fe72a
+      size: 14620
+    - path: src/air_quality_imputer/training/model_registry.py
+      hash: md5
+      md5: a7907802ba9659c5dd3add24b76b82f4
+      size: 3110
+    params:
+      configs/pipeline/params.yaml:
+        experiment:
+          stations:
+          - all_stations
+          models:
+          - transformer
+          - saits
+          features:
+          - station
+          - PM10
+          - PM2.5
+          - temperature
+          - rain
+          - pressure
+          - precipitation
+          - wind_speed
+          - clouds
+          - wind_direction
+          never_mask_features:
+          - station
+          block_size: 24
+          step_size: 1
+          missing_rate: 0.2
+          seed: 42
+          mask_mode: block_feature
+          block_min_len: 2
+          block_max_len: 14
+          block_missing_prob: 0.35
+          feature_block_prob: 0.6
+          block_no_overlap: true
+        models:
+          transformer:
+            type: classic_transformer
+            checkpoint_name: transformer.pt
+            params:
+              d_model: 128
+              n_layer: 3
+              n_head: 4
+              dropout: 0.1
+              bias: true
+              norm_eps: 1e-06
+              use_torch_compile: true
+              compile_mode: reduce-overhead
+              compile_dynamic: false
+              optimizer_fused: true
+              optimizer_weight_decay: 0.01
+              scheduler_warmup_ratio: 0.125
+              scheduler_warmup_start_factor: 0.3
+              scheduler_min_lr: 1e-07
+              grad_clip_norm: 0.5
+              dataloader_num_workers: -1
+              dataloader_prefetch_factor: 4
+              dataloader_persistent_workers: true
+              dataloader_pin_memory: true
+              train_mask_mode: block_feature
+              train_missing_rate: 0.2
+              train_block_min_len: 2
+              train_block_max_len: 14
+              train_block_missing_prob: 0.35
+              train_feature_block_prob: 0.6
+              train_block_no_overlap: true
+          saits:
+            type: saits
+            checkpoint_name: saits.pt
+            params:
+              d_model: 128
+              n_layers: 3
+              n_head: 4
+              dropout: 0.1
+              ORT_weight: 1
+              MIT_weight: 1
+        paths.metrics_dir: reports/metrics
+        paths.plots_dir: reports/plots/model_eval
+        paths.reports_dir: reports/model_eval
+        tracking:
+          enabled: true
+          repo_owner: PetelinekBenjamin
+          repo_name: air-quality-missing-data-imputation
+          experiment_name: air-quality-imputer
+    outs:
+    - path: reports/metrics/model_eval_metrics.json
+      hash: md5
+      md5: 59d668263afd97baf9c9760f770c55cd
+      size: 407
+    - path: reports/metrics/summary_by_feature_for_dvc_plots.csv
+      hash: md5
+      md5: c5b45e31ed5f265a78a6e30ddaf578af
+      size: 1284
+    - path: reports/model_eval
+      hash: md5
+      md5: 0e5de1aeadb5248e7785e8d189a75886.dir
+      size: 4405
+      nfiles: 10
+    - path: reports/plots/model_eval
+      hash: md5
+      md5: 27399699c565a7473373d8dd5a0a3169.dir
+      size: 100844
+      nfiles: 2

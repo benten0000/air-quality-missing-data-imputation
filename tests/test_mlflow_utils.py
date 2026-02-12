@@ -48,6 +48,13 @@ class _DummyMlflow:
         self.artifacts.append((path, artifact_path))
 
 
+class _DummyDagsHub:
+    def init(self, repo_owner, repo_name, mlflow):
+        self.repo_owner = repo_owner
+        self.repo_name = repo_name
+        self.mlflow = mlflow
+
+
 class MLflowTrackerTests(unittest.TestCase):
     def test_disabled_when_mlflow_missing(self):
         with patch("air_quality_imputer.tracking.mlflow_utils._mlflow", None):
@@ -56,8 +63,13 @@ class MLflowTrackerTests(unittest.TestCase):
 
     def test_logs_flattened_params_and_metrics(self):
         dummy = _DummyMlflow()
-        with patch("air_quality_imputer.tracking.mlflow_utils._mlflow", dummy):
-            tracker = MLflowTracker({"enabled": True, "experiment_name": "x"})
+        dagshub_dummy = _DummyDagsHub()
+        with patch("air_quality_imputer.tracking.mlflow_utils._mlflow", dummy), patch(
+            "air_quality_imputer.tracking.mlflow_utils._dagshub", dagshub_dummy
+        ):
+            tracker = MLflowTracker(
+                {"enabled": True, "experiment_name": "x", "repo_owner": "o", "repo_name": "r"}
+            )
             with tracker.start_run("run-1", tags={"stage": "train"}):
                 tracker.log_params({"a": {"b": 1}}, prefix="cfg")
                 tracker.log_metrics({"m1": 1.5, "m2": None, "m3": "nan"})

@@ -32,8 +32,6 @@ Glavni bloki:
 - `paths`
 - `tracking`
 
-Legacy Hydra YAML-i so premaknjeni v `configs/legacy/hydra/` in niso več primarni source-of-truth.
-
 ## Uporaba
 
 ### 1) Namestitev
@@ -71,21 +69,22 @@ dvc plots show
 
 ## MLflow / DagsHub
 
-MLflow uporablja standardne env spremenljivke:
-
-- `MLFLOW_TRACKING_URI`
-- `MLFLOW_TRACKING_USERNAME`
-- `MLFLOW_TRACKING_PASSWORD`
-
 `tracking` konfiguracija je v `configs/pipeline/params.yaml`.
+
+MLflow tracking je nastavljen na DagsHub-only način:
+
+- `tracking.repo_owner`
+- `tracking.repo_name`
+
+Tracker vedno pokliče `dagshub.init(..., mlflow=True)` (brez fallbacka na klasični URI način).
 
 Train run naming:
 
-- `train::<model>::<station>::<seed>`
+- `train/<model>/<station>/seed-<seed>`
 
 Eval run naming:
 
-- `eval::<model>::<station>::<seed>`
+- `eval/<model>/<station>/seed-<seed>`
 
 Logirane metrike:
 
@@ -96,6 +95,8 @@ Logirane metrike:
 - `eval.feature.<feature>.mae`
 - `eval.feature.<feature>.rmse`
 
+Za train rune poskusimo logirati tudi MLflow Torch model (`model/mlflow`), zato se v UI napolni stolpec **Models** tam, kjer je model uspešno logiran.
+
 ## DVC remote (DagsHub S3)
 
 Primer setupa:
@@ -103,7 +104,7 @@ Primer setupa:
 ```bash
 dvc remote add -d origin s3://<bucket-or-repo-path>
 dvc remote modify origin endpointurl https://dagshub.com/api/v1/repos/<owner>/<repo>/s3
-dvc remote modify --local origin access_key_id <token>
+dvc remote modify --local origin access_key_id <username>
 dvc remote modify --local origin secret_access_key <token>
 ```
 
@@ -120,18 +121,11 @@ Generirani artefakti:
 - `reports/model_eval/<model>/test_metrics_by_feature.csv`
 - `reports/model_eval/summary_overall.csv`
 - `reports/model_eval/summary_by_feature.csv`
-- `reports/model_eval/metrics.json`
+- `reports/metrics/model_eval_metrics.json`
 - `reports/plots/model_eval/*.png`
 
 ## CLI skripte
 
-Novi entrypointi:
-
 - `aqi-prepare`
 - `aqi-train-models`
 - `aqi-evaluate-models`
-
-Legacy wrapperji (deprecated):
-
-- `aqi-train`
-- `aqi-eval`

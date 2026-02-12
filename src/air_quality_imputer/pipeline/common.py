@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import random
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, cast
 
 import numpy as np
 import torch
@@ -44,12 +44,15 @@ def derive_seed(base_seed: int, station: str, model_name: str) -> int:
 
 
 def to_plain_dict(cfg: Any) -> dict[str, Any]:
+    def _string_key_dict(value: Mapping[Any, Any]) -> dict[str, Any]:
+        return {str(key): item for key, item in value.items()}
+
     if isinstance(cfg, DictConfig):
         raw = OmegaConf.to_container(cfg, resolve=True)
-        if isinstance(raw, dict):
-            return raw
-    if isinstance(cfg, dict):
-        return dict(cfg)
+        if isinstance(raw, Mapping):
+            return _string_key_dict(cast(Mapping[Any, Any], raw))
+    if isinstance(cfg, Mapping):
+        return _string_key_dict(cast(Mapping[Any, Any], cfg))
     return {}
 
 
@@ -58,6 +61,9 @@ def get_model_cfg_from_params(cfg: DictConfig, model_name: str) -> DictConfig:
     if models_cfg is None or model_name not in models_cfg:
         raise KeyError(f"Missing models.{model_name} in pipeline params.")
     model_cfg = models_cfg[model_name]
-    if not isinstance(model_cfg, DictConfig):
-        model_cfg = OmegaConf.create(model_cfg)
-    return model_cfg
+    if isinstance(model_cfg, DictConfig):
+        return model_cfg
+    created = OmegaConf.create(model_cfg)
+    if not isinstance(created, DictConfig):
+        raise TypeError(f"models.{model_name} must be a mapping config.")
+    return created

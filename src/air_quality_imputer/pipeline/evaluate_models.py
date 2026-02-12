@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -75,13 +75,17 @@ def build_eval_summaries(
     for model_type, feature_df in per_model_feature.items():
         if feature_df.empty:
             continue
-        grouped = feature_df.groupby("feature", as_index=False).agg(
-            n_eval=("n_eval", "sum"),
-            mae=("mae", lambda s: weighted_mean(s, feature_df.loc[s.index, "n_eval"])),
-            rmse=("rmse", lambda s: weighted_mean(s, feature_df.loc[s.index, "n_eval"])),
-        )
-        grouped.insert(0, "model_type", model_type)
-        summary_feature_rows.extend(grouped.to_dict(orient="records"))
+        for feature, group in feature_df.groupby("feature"):
+            group_weights = cast(pd.Series, group["n_eval"])
+            summary_feature_rows.append(
+                {
+                    "model_type": model_type,
+                    "feature": str(feature),
+                    "n_eval": int(pd.to_numeric(group_weights, errors="coerce").fillna(0).sum()),
+                    "mae": weighted_mean(cast(pd.Series, group["mae"]), group_weights),
+                    "rmse": weighted_mean(cast(pd.Series, group["rmse"]), group_weights),
+                }
+            )
 
     summary_overall_df = pd.DataFrame(summary_overall_rows)
     if not summary_overall_df.empty:
@@ -280,6 +284,7 @@ def run(cfg: DictConfig) -> None:
     processed_dir = Path(cfg.paths.processed_dir)
     reports_root = Path(cfg.paths.reports_dir)
     plots_dir = Path(cfg.paths.plots_dir)
+    metrics_dir = Path(cfg.paths.metrics_dir)
 
     stations = list(cfg.experiment.stations)
     model_names = list(cfg.experiment.models)
@@ -342,7 +347,7 @@ def run(cfg: DictConfig) -> None:
             pd.DataFrame([overall_row]).to_csv(station_overall_path, index=False)
             pd.DataFrame(feature_rows).to_csv(station_feature_path, index=False)
 
-            run_name = f"eval::{model_name}::{station}::{run_seed}"
+            run_name = f"eval/{model_name}/{station}/seed-{run_seed}"
             tags = {
                 "stage": "eval",
                 "model": model_name,
@@ -367,8 +372,8 @@ def run(cfg: DictConfig) -> None:
                     }
                 )
                 tracker.log_metrics(feature_metrics)
-                tracker.log_artifact(station_overall_path, artifact_path="evaluation")
-                tracker.log_artifact(station_feature_path, artifact_path="evaluation")
+                tracker.log_artifact(station_overall_path, artifact_path=f"evaluation/{station}")
+                tracker.log_artifact(station_feature_path, artifact_path=f"evaluation/{station}")
 
             print(
                 f"[eval] {model_name}/{station}: "
@@ -393,12 +398,15 @@ def run(cfg: DictConfig) -> None:
     plot_paths = save_eval_plots(summary_overall_df, summary_feature_df, plots_dir=plots_dir)
 
     metrics_payload = _to_metrics_json(summary_overall_df)
-    metrics_path = reports_root / "metrics.json"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = metrics_dir / "model_eval_metrics.json"
+    plots_source_path = metrics_dir / "summary_by_feature_for_dvc_plots.csv"
     metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+    summary_feature_df.to_csv(plots_source_path, index=False)
 
     # Attach summary artifacts to a single compact run.
     with tracker.start_run(
-        run_name=f"eval::summary::all::{base_seed}",
+        run_name=f"eval/summary/all/seed-{base_seed}",
         tags={
             "stage": "eval_summary",
             "model": "all",
@@ -407,15 +415,17 @@ def run(cfg: DictConfig) -> None:
             "mask_mode": mask_mode,
         },
     ):
-        tracker.log_artifact(summary_overall_path, artifact_path="summary")
-        tracker.log_artifact(summary_feature_path, artifact_path="summary")
-        tracker.log_artifact(metrics_path, artifact_path="summary")
+        tracker.log_artifact(summary_overall_path, artifact_path="summary/files")
+        tracker.log_artifact(summary_feature_path, artifact_path="summary/files")
+        tracker.log_artifact(metrics_path, artifact_path="summary/files")
+        tracker.log_artifact(plots_source_path, artifact_path="summary/files")
         for plot_path in plot_paths:
             tracker.log_artifact(plot_path, artifact_path="plots")
 
     print(f"[eval] Saved summary: {summary_overall_path}")
     print(f"[eval] Saved summary: {summary_feature_path}")
     print(f"[eval] Saved metrics: {metrics_path}")
+    print(f"[eval] Saved DVC plots source: {plots_source_path}")
     for path in plot_paths:
         print(f"[eval] Saved plot: {path}")
 

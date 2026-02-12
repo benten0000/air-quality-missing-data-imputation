@@ -22,7 +22,7 @@ from air_quality_imputer.training.model_registry import build_model_from_cfg, co
 SUPPORTED_MODELS = {"transformer", "saits"}
 
 
-def _load_windows(processed_dir: Path, station: str) -> dict[str, np.ndarray]:
+def _load_windows(processed_dir: Path, station: str) -> dict[str, Any]:
     windows_path = processed_dir / station / "windows.npz"
     if not windows_path.exists():
         raise FileNotFoundError(f"Missing prepared windows for station {station}: {windows_path}")
@@ -87,7 +87,7 @@ def run(cfg: DictConfig) -> None:
                 runtime_params={"n_stations": int(prepared["n_stations"])},
             )
 
-            run_name = f"train::{model_name}::{station}::{run_seed}"
+            run_name = f"train/{model_name}/{station}/seed-{run_seed}"
             tags = {
                 "stage": "train",
                 "model": model_name,
@@ -125,7 +125,9 @@ def run(cfg: DictConfig) -> None:
                     },
                     model_path,
                 )
-                tracker.log_artifact(model_path, artifact_path="checkpoints")
+                tracker.log_artifact(model_path, artifact_path="model/files")
+                logged_model = tracker.log_torch_model(model, artifact_path="model/mlflow")
+                tracker.set_tags({"logged_model": str(bool(logged_model)).lower()})
 
                 best_loss = None
                 if isinstance(fit_stats, dict):
