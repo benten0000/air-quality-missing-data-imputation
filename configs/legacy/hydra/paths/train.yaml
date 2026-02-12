@@ -1,0 +1,4 @@
+data_dir: data/raw
+models_dir: artifacts/models
+processed_dir: data/processed/splits
+scalers_dir: data/processed/scalers

@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.egg-info/
 
 # Virtual environments
 .venv/
@@ -11,12 +12,20 @@ env/
 
 # Local tooling
 .vscode/
+.dvc/config.local
+.dvc/tmp/
+.dvc/cache/
+mlruns/
 
 # Artifacts and experiment outputs
 artifacts/
 data/processed/
 reports/model_eval/
-*.log
+reports/plots/model_eval/
+logs/*
+!logs/.gitkeep
+train_imputer.log
+evaluate_imputer.log
 
 # Notebook and OS noise
 .ipynb_checkpoints/

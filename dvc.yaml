@@ -1,0 +1,52 @@
+stages:
+  prepare_data:
+    cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.prepare_data --params configs/pipeline/params.yaml
+    deps:
+      - src/air_quality_imputer/pipeline/prepare_data.py
+      - src/air_quality_imputer/pipeline/common.py
+      - src/air_quality_imputer/training/data_utils.py
+      - configs/pipeline/params.yaml
+      - data/raw
+    params:
+      - configs/pipeline/params.yaml
+    outs:
+      - data/processed/splits
+      - data/processed/scalers
+
+  train_models:
+    cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.train_models --params configs/pipeline/params.yaml
+    deps:
+      - src/air_quality_imputer/pipeline/train_models.py
+      - src/air_quality_imputer/pipeline/common.py
+      - src/air_quality_imputer/tracking/mlflow_utils.py
+      - src/air_quality_imputer/training/model_registry.py
+      - src/air_quality_imputer/models
+      - configs/pipeline/params.yaml
+      - data/processed/splits
+      - data/processed/scalers
+    params:
+      - configs/pipeline/params.yaml
+    outs:
+      - artifacts/models
+
+  evaluate_models:
+    cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.evaluate_models --params configs/pipeline/params.yaml
+    deps:
+      - src/air_quality_imputer/pipeline/evaluate_models.py
+      - src/air_quality_imputer/pipeline/common.py
+      - src/air_quality_imputer/tracking/mlflow_utils.py
+      - src/air_quality_imputer/training/data_utils.py
+      - src/air_quality_imputer/training/model_registry.py
+      - src/air_quality_imputer/models
+      - configs/pipeline/params.yaml
+      - data/processed/splits
+      - artifacts/models
+    params:
+      - configs/pipeline/params.yaml
+    outs:
+      - reports/model_eval
+      - reports/plots/model_eval
+    metrics:
+      - reports/model_eval/metrics.json
+    plots:
+      - reports/model_eval/summary_by_feature.csv

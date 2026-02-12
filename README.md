@@ -1,80 +1,137 @@
 # priprava_podatkov
 
-## Struktura
-- `data/raw/`: vhodni CSV-ji po postajah (pri tebi symlink na `combined/`)
-- `data/processed/splits/`: train/val/test CSV-ji + `windows.npz` po postajah
-- `data/processed/scalers/`: scalerji po postajah
-- `artifacts/models/`: checkpointi modelov po tipu in postaji
-- `reports/`: porocila in grafi
-- `notebooks/`: analiticni notebooki
-- `src/air_quality_imputer/models/`: implementacije modelov
-- `src/air_quality_imputer/training/`: skupen train/eval pipeline + registry
+Repozitorij je postavljen kot DVC-first ML pipeline za imputacijo kakovosti zraka:
 
-## Modularni model setup
-Model se izbira prek Hydra config group `model`:
-- `model=classic_transformer`
-- `model=diffusion_transformer`
+- `dvc repro` je glavni entrypoint.
+- DVC verzionira `data/processed`, `artifacts/models`, `reports/*`.
+- MLflow (npr. DagsHub endpoint) sledi train/eval runom in artefaktom.
 
-Model-specifični parametri:
-- `src/air_quality_imputer/training/conf/model/classic_transformer.yaml`
-- `src/air_quality_imputer/training/conf/model/diffusion_transformer.yaml`
+## Pipeline
 
-Dodajanje novega modela:
-1. Dodas model datoteko v `src/air_quality_imputer/models/`
-2. Dodas vnos v `src/air_quality_imputer/training/model_registry.py`
-3. Dodas `conf/model/<new_model>.yaml`
+Stagi v `dvc.yaml`:
 
-## Trening
-Kanonični entrypoint:
-- `src/air_quality_imputer/training/train_imputer.py`
+1. `prepare_data`
+2. `train_models`
+3. `evaluate_models`
 
-Zagon:
+Implementacija stage-ov:
 
-```bash
-aqi-train
-```
+- `src/air_quality_imputer/pipeline/prepare_data.py`
+- `src/air_quality_imputer/pipeline/train_models.py`
+- `src/air_quality_imputer/pipeline/evaluate_models.py`
 
-Alternativno (brez install):
-```bash
-PYTHONPATH=src python -m air_quality_imputer.training.train_imputer
-```
+## Parametri
 
-Več modelov hkrati:
+Enotni vir parametrov: `configs/pipeline/params.yaml`.
+
+Glavni bloki:
+
+- `experiment`
+- `training`
+- `models`
+- `paths`
+- `tracking`
+
+Legacy Hydra YAML-i so premaknjeni v `configs/legacy/hydra/` in niso več primarni source-of-truth.
+
+## Uporaba
+
+### 1) Namestitev
 
 ```bash
-aqi-train \
-  experiment.models=[classic_transformer,diffusion_transformer]
+pip install -e .
 ```
 
-## Evaluacija
-Kanonični entrypoint:
-- `src/air_quality_imputer/training/evaluate_imputer.py`
-
-Rezultati:
-- `reports/model_eval/<model_type>/test_metrics_overall.csv`
-- `reports/model_eval/<model_type>/test_metrics_by_feature.csv`
-
-Zagon:
+### 2) Lokalni zagon pipeline-a
 
 ```bash
-aqi-eval
+dvc repro
 ```
 
-Alternativno (brez install):
-```bash
-PYTHONPATH=src python -m air_quality_imputer.training.evaluate_imputer
-```
-
-Več modelov hkrati:
+### 3) Eksperimenti
 
 ```bash
-aqi-eval \
-  experiment.models=[classic_transformer,diffusion_transformer]
+dvc exp run -S configs/pipeline/params.yaml:training.lr=0.0005 -S configs/pipeline/params.yaml:experiment.missing_rate=0.25
+dvc exp show
 ```
 
-## Backward compatibility
-Stari entrypointi se še vedno podpirajo kot wrapperji:
-- `air_quality_imputer.training.train_transformer_imputer`
-- `air_quality_imputer.training.evaluate_transformer_imputer`
+### 4) DVC podatki/modeli poročila
 
-Opomba: CUDA je za trening/evaluacijo bistveno hitrejsa.
+```bash
+dvc push
+dvc pull
+```
+
+### 5) DVC metrics/plots
+
+```bash
+dvc metrics show
+dvc plots show
+```
+
+## MLflow / DagsHub
+
+MLflow uporablja standardne env spremenljivke:
+
+- `MLFLOW_TRACKING_URI`
+- `MLFLOW_TRACKING_USERNAME`
+- `MLFLOW_TRACKING_PASSWORD`
+
+`tracking` konfiguracija je v `configs/pipeline/params.yaml`.
+
+Train run naming:
+
+- `train::<model>::<station>::<seed>`
+
+Eval run naming:
+
+- `eval::<model>::<station>::<seed>`
+
+Logirane metrike:
+
+- `train.loss.best`
+- `eval.mae`
+- `eval.rmse`
+- `eval.n_eval`
+- `eval.feature.<feature>.mae`
+- `eval.feature.<feature>.rmse`
+
+## DVC remote (DagsHub S3)
+
+Primer setupa:
+
+```bash
+dvc remote add -d origin s3://<bucket-or-repo-path>
+dvc remote modify origin endpointurl https://dagshub.com/api/v1/repos/<owner>/<repo>/s3
+dvc remote modify --local origin access_key_id <token>
+dvc remote modify --local origin secret_access_key <token>
+```
+
+Credentiali naj ostanejo v `.dvc/config.local` (ne commitaj).
+
+## Izhodi
+
+Generirani artefakti:
+
+- `data/processed/splits/*`
+- `data/processed/scalers/*`
+- `artifacts/models/<model>/<station>/*.pt`
+- `reports/model_eval/<model>/test_metrics_overall.csv`
+- `reports/model_eval/<model>/test_metrics_by_feature.csv`
+- `reports/model_eval/summary_overall.csv`
+- `reports/model_eval/summary_by_feature.csv`
+- `reports/model_eval/metrics.json`
+- `reports/plots/model_eval/*.png`
+
+## CLI skripte
+
+Novi entrypointi:
+
+- `aqi-prepare`
+- `aqi-train-models`
+- `aqi-evaluate-models`
+
+Legacy wrapperji (deprecated):
+
+- `aqi-train`
+- `aqi-eval`

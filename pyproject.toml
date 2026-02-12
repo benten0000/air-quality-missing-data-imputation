@@ -17,9 +17,14 @@ dependencies = [
   "torch",
   "joblib",
   "pypots",
+  "mlflow",
+  "dvc[s3]",
 ]
 
 [project.scripts]
+aqi-prepare = "air_quality_imputer.pipeline.prepare_data:main"
+aqi-train-models = "air_quality_imputer.pipeline.train_models:main"
+aqi-evaluate-models = "air_quality_imputer.pipeline.evaluate_models:main"
 aqi-train = "air_quality_imputer.training.train_imputer:main"
 aqi-eval = "air_quality_imputer.training.evaluate_imputer:main"
 

@@ -1,0 +1,4 @@
+models_dir: artifacts/models
+processed_dir: data/processed/splits
+reports_dir: reports/model_eval
+plots_dir: reports/plots/model_eval

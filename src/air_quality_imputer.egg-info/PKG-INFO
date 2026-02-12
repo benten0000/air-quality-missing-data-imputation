@@ -11,12 +11,15 @@ Requires-Dist: hydra-core>=1.3
 Requires-Dist: omegaconf>=2.3
 Requires-Dist: torch
 Requires-Dist: joblib
+Requires-Dist: pypots
 
 # priprava_podatkov
 
 ## Struktura
-- `combined/`: originalni CSV-ji po postajah
-- `completed/`: dopolnjeni CSV-ji (urni indeks)
+- `data/raw/`: vhodni CSV-ji po postajah (pri tebi symlink na `combined/`)
+- `data/processed/splits/`: train/val/test CSV-ji + `windows.npz` po postajah
+- `data/processed/scalers/`: scalerji po postajah
+- `artifacts/models/`: checkpointi modelov po tipu in postaji
 - `reports/`: porocila in grafi
 - `notebooks/`: analiticni notebooki
 - `src/air_quality_imputer/models/`: implementacije modelov
@@ -24,12 +27,20 @@ Requires-Dist: joblib
 
 ## Modularni model setup
 Model se izbira prek Hydra config group `model`:
-- `model=classic_transformer`
-- `model=diffusion_transformer`
+- `model=transformer`
 
 Model-specifični parametri:
-- `src/air_quality_imputer/training/conf/model/classic_transformer.yaml`
-- `src/air_quality_imputer/training/conf/model/diffusion_transformer.yaml`
+- `src/air_quality_imputer/training/conf/model/transformer.yaml`
+
+Skupni parametri eksperimenta:
+- `src/air_quality_imputer/training/conf/experiment/common.yaml`
+
+Skupni train/eval path configi:
+- `src/air_quality_imputer/training/conf/paths/train.yaml`
+- `src/air_quality_imputer/training/conf/paths/eval.yaml`
+
+Skupni train hiperparametri:
+- `src/air_quality_imputer/training/conf/training/default.yaml`
 
 Dodajanje novega modela:
 1. Dodas model datoteko v `src/air_quality_imputer/models/`
@@ -40,14 +51,13 @@ Dodajanje novega modela:
 Kanonični entrypoint:
 - `src/air_quality_imputer/training/train_imputer.py`
 
-Shrani:
-- raw split: `train_data.csv`, `val_data.csv`, `test_data.csv`
-- window set: `windows.npz` (`X_train`, `X_val_ori`, `X_val_masked`, `X_test_ori`)
-- scaler: `scaler.pkl`
-- model checkpoint: `artifacts/models/<model_type>/<station>/<checkpoint_name>`
-
 Zagon:
 
+```bash
+aqi-train
+```
+
+Alternativno (brez install):
 ```bash
 PYTHONPATH=src python -m air_quality_imputer.training.train_imputer
 ```
@@ -55,8 +65,8 @@ PYTHONPATH=src python -m air_quality_imputer.training.train_imputer
 Več modelov hkrati:
 
 ```bash
-PYTHONPATH=src python -m air_quality_imputer.training.train_imputer \
-  experiment.models=[classic_transformer,diffusion_transformer]
+aqi-train \
+  experiment.models=[transformer,saits]
 ```
 
 ## Evaluacija
@@ -70,19 +80,24 @@ Rezultati:
 Zagon:
 
 ```bash
+aqi-eval
+```
+
+Alternativno (brez install):
+```bash
 PYTHONPATH=src python -m air_quality_imputer.training.evaluate_imputer
 ```
 
 Več modelov hkrati:
 
 ```bash
-PYTHONPATH=src python -m air_quality_imputer.training.evaluate_imputer \
-  experiment.models=[classic_transformer,diffusion_transformer]
+aqi-eval \
+  experiment.models=[transformer,saits]
 ```
 
-## Backward compatibility
-Stari entrypointi se še vedno podpirajo kot wrapperji:
-- `air_quality_imputer.training.train_transformer_imputer`
-- `air_quality_imputer.training.evaluate_transformer_imputer`
+## Logi
+Za lokalno higieno so logi v mapi `logs/`:
+- `logs/train_imputer.log`
+- `logs/evaluate_imputer.log`
 
 Opomba: CUDA je za trening/evaluacijo bistveno hitrejsa.

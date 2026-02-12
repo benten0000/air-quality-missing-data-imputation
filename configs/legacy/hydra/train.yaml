@@ -1,0 +1,12 @@
+defaults:
+  # Compose final config from modular groups.
+  - model: transformer
+  - experiment: common
+  - paths: train
+  - training: default
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

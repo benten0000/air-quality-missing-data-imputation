@@ -1,0 +1,77 @@
+experiment:
+  stations: [all_stations]
+  models: [transformer, saits]
+  features: [station, PM10, PM2.5, temperature, rain, pressure, precipitation, wind_speed, clouds, wind_direction]
+  never_mask_features: [station]
+  block_size: 24
+  step_size: 1
+  missing_rate: 0.2
+  seed: 42
+  mask_mode: block_feature
+  block_min_len: 2
+  block_max_len: 14
+  block_missing_prob: 0.35
+  feature_block_prob: 0.6
+  block_no_overlap: true
+
+training:
+  epochs: 120
+  batch_size: 128
+  lr: 0.0008
+  patience: 20
+  min_delta: 0.0001
+
+models:
+  transformer:
+    type: classic_transformer
+    checkpoint_name: transformer.pt
+    params:
+      d_model: 128
+      n_layer: 3
+      n_head: 4
+      dropout: 0.1
+      bias: true
+      norm_eps: 0.000001
+      use_torch_compile: true
+      compile_mode: reduce-overhead
+      compile_dynamic: false
+      optimizer_fused: true
+      optimizer_weight_decay: 0.01
+      scheduler_warmup_ratio: 0.125
+      scheduler_warmup_start_factor: 0.3
+      scheduler_min_lr: 0.0000001
+      grad_clip_norm: 0.5
+      dataloader_num_workers: -1
+      dataloader_prefetch_factor: 4
+      dataloader_persistent_workers: true
+      dataloader_pin_memory: true
+      train_mask_mode: block_feature
+      train_missing_rate: 0.2
+      train_block_min_len: 2
+      train_block_max_len: 14
+      train_block_missing_prob: 0.35
+      train_feature_block_prob: 0.6
+      train_block_no_overlap: true
+  saits:
+    type: saits
+    checkpoint_name: saits.pt
+    params:
+      d_model: 128
+      n_layers: 3
+      n_head: 4
+      dropout: 0.1
+      ORT_weight: 1
+      MIT_weight: 1
+
+paths:
+  data_dir: data/raw
+  processed_dir: data/processed/splits
+  scalers_dir: data/processed/scalers
+  models_dir: artifacts/models
+  reports_dir: reports/model_eval
+  plots_dir: reports/plots/model_eval
+
+tracking:
+  enabled: true
+  experiment_name: air-quality-imputer
+  tracking_uri: ${oc.env:MLFLOW_TRACKING_URI,null}

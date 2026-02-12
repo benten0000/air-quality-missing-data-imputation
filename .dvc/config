@@ -1,0 +1,6 @@
+[core]
+    remote = origin
+
+# Configure your DagsHub storage endpoint:
+# dvc remote modify origin url s3://<bucket-or-repo-path>
+# dvc remote modify origin endpointurl https://dagshub.com/api/v1/repos/<owner>/<repo>/s3
