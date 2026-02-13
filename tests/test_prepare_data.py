@@ -42,7 +42,6 @@ class PrepareDataTests(unittest.TestCase):
                     "experiment": {
                         "stations": ["all_stations"],
                         "features": [
-                            "station",
                             "PM10",
                             "PM2.5",
                             "temperature",
@@ -53,7 +52,7 @@ class PrepareDataTests(unittest.TestCase):
                             "clouds",
                             "wind_direction",
                         ],
-                        "never_mask_features": ["station"],
+                        "never_mask_features": [],
                         "block_size": 4,
                         "step_size": 1,
                         "seed": 42,
@@ -72,7 +71,6 @@ class PrepareDataTests(unittest.TestCase):
                     "paths": {
                         "data_dir": str(raw_dir),
                         "processed_dir": str(root / "data" / "processed" / "splits"),
-                        "scalers_dir": str(root / "data" / "processed" / "scalers"),
                     },
                 }
             )
@@ -80,12 +78,7 @@ class PrepareDataTests(unittest.TestCase):
             run(cfg)
 
             split_root = root / "data" / "processed" / "splits" / "all_stations"
-            scaler_path = root / "data" / "processed" / "scalers" / "all_stations" / "scaler.pkl"
             self.assertTrue((split_root / "windows.npz").exists())
-            self.assertTrue((split_root / "train_data.csv").exists())
-            self.assertTrue((split_root / "val_data.csv").exists())
-            self.assertTrue((split_root / "test_data.csv").exists())
-            self.assertTrue(scaler_path.exists())
             self.assertTrue((root / "data" / "processed" / "splits" / "prepare_manifest.json").exists())
 
     def test_prepare_stage_materializes_npz_dataset(self):
@@ -154,7 +147,6 @@ class PrepareDataTests(unittest.TestCase):
                     "paths": {
                         "data_dir": str(root / "data" / "unused"),
                         "processed_dir": str(root / "data" / "processed" / "splits"),
-                        "scalers_dir": str(root / "data" / "processed" / "scalers"),
                     },
                 }
             )

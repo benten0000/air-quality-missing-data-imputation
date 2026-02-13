@@ -27,7 +27,6 @@ data/benchmark_processed/
 data/benchmark_raw/
 data/external_cache/
 reports/model_eval/
-reports/plots/model_eval/
 logs/*
 !logs/.gitkeep
 train_imputer.log

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import importlib
-import os
 import subprocess
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -10,12 +8,12 @@ from typing import Any, Iterator, Mapping
 
 try:
     import mlflow as _mlflow
-except Exception:  # pragma: no cover - exercised in tests with monkeypatch
+except Exception:  # pragma: no cover
     _mlflow = None
 
 try:
     import dagshub as _dagshub
-except Exception:  # pragma: no cover - optional dependency
+except Exception:  # pragma: no cover
     _dagshub = None
 
 
@@ -51,7 +49,7 @@ def _clean_metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
         except Exception:
             continue
         if number == number:
-            cleaned[key] = number
+            cleaned[str(key)] = number
     return cleaned
 
 
@@ -62,12 +60,12 @@ def _slug(value: str) -> str:
     slug = "".join(out).strip("-")
     while "--" in slug:
         slug = slug.replace("--", "-")
-    return slug or "model"
+    return slug or "dataset"
 
 
 def _dataset_experiment_name(dataset_name: str) -> str:
     dataset_slug = _slug(dataset_name)
-    if dataset_slug in {"air", "air-quality", "air-quality-imputer", "air-quality-imputation", "air-quality-csv", "airquality"}:
+    if dataset_slug in {"air", "air-quality", "airquality"}:
         return "air-quality-imputer"
     return f"{dataset_slug}-quality-imputer"
 
@@ -78,45 +76,31 @@ class MLflowTracker:
     def __init__(self, tracking_cfg: Mapping[str, Any] | None):
         cfg = dict(tracking_cfg or {})
         self.enabled = bool(cfg.get("enabled", True))
-        self.register_models = bool(cfg.get("register_models", False))
         self._mlflow: Any | None = _mlflow
         self.base_tags = {"git_commit": _git_commit(), "project": "air-quality-imputer"}
+
         if not self.enabled:
             return
         if self._mlflow is None:
             print("[WARN] MLflow is not installed, tracking is disabled.")
             self.enabled = False
             return
-        if _dagshub is None:
-            print("[WARN] dagshub package is not installed, tracking is disabled.")
-            self.enabled = False
-            return
 
-        mlflow = self._client()
-        self._init_dagshub(cfg)
-        try:
-            dataset_name = str(cfg.get("dataset_name", "air_quality")).strip()
-            experiment_name = _dataset_experiment_name(dataset_name)
-            mlflow.set_experiment(experiment_name)
-        except Exception as exc:
-            print(f"[WARN] MLflow init failed, disabling tracking: {exc}")
-            self.enabled = False
+        repo_owner = cfg.get("repo_owner")
+        repo_name = cfg.get("repo_name")
+        if repo_owner and repo_name and _dagshub is not None:
+            try:
+                _dagshub.init(repo_owner=str(repo_owner), repo_name=str(repo_name), mlflow=True)
+            except Exception as exc:
+                print(f"[WARN] dagshub.init failed: {exc}")
 
-    def _init_dagshub(self, cfg: Mapping[str, Any]) -> None:
-        if _dagshub is None:
-            raise RuntimeError("dagshub package is not installed.")
-        repo_owner = cfg.get("repo_owner") or os.getenv("DAGSHUB_REPO_OWNER")
-        repo_name = cfg.get("repo_name") or os.getenv("DAGSHUB_REPO_NAME")
-        if not repo_owner or not repo_name:
-            raise RuntimeError("Missing repo_owner/repo_name for dagshub.init.")
+        dataset_name = str(cfg.get("dataset_name", "air_quality")).strip() or "air_quality"
+        experiment_name = _dataset_experiment_name(dataset_name)
         try:
-            _dagshub.init(  # pyright: ignore[reportPrivateImportUsage]
-                repo_owner=str(repo_owner),
-                repo_name=str(repo_name),
-                mlflow=True,
-            )
+            self._client().set_experiment(experiment_name)
         except Exception as exc:
-            raise RuntimeError(f"dagshub.init failed: {exc}") from exc
+            print(f"[WARN] MLflow init failed, tracking is disabled: {exc}")
+            self.enabled = False
 
     def _client(self) -> Any:
         if self._mlflow is None:
@@ -129,29 +113,28 @@ class MLflowTracker:
             yield None
             return
         mlflow = self._client()
-        run_tags = {k: str(v) for k, v in {**self.base_tags, **dict(tags or {})}.items()}
         with mlflow.start_run(run_name=run_name) as run:
+            run_tags = {k: str(v) for k, v in {**self.base_tags, **dict(tags or {})}.items()}
             mlflow.set_tags(run_tags)
             yield run
 
     def log_params(self, params: Mapping[str, Any], prefix: str | None = None) -> None:
         if not self.enabled:
             return
-        mlflow = self._client()
         flat = _flatten_dict(params)
         if prefix:
             flat = {f"{prefix}.{key}": value for key, value in flat.items()}
         payload = {k: str(v) for k, v in flat.items() if v is not None}
         if payload:
-            mlflow.log_params(payload)
+            self._client().log_params(payload)
 
     def log_metrics(self, metrics: Mapping[str, Any], step: int | None = None) -> None:
         if not self.enabled:
             return
-        mlflow = self._client()
         payload = _clean_metrics(metrics)
         if not payload:
             return
+        mlflow = self._client()
         mlflow.log_metrics(payload) if step is None else mlflow.log_metrics(payload, step=step)
 
     def log_artifact(self, path: Path | str, artifact_path: str | None = None) -> None:
@@ -162,123 +145,3 @@ class MLflowTracker:
         if self.enabled:
             self._client().set_tags({k: str(v) for k, v in tags.items()})
 
-    def log_input_dataset(
-        self,
-        *,
-        name: str,
-        source: str,
-        context: str,
-        preview: Mapping[str, Any] | None = None,
-    ) -> None:
-        if not self.enabled:
-            return
-        try:
-            import pandas as pd
-
-            mlflow = self._client()
-            dataset_mod = importlib.import_module("mlflow.data")
-            row = dict(preview or {})
-            if not row:
-                row = {"dataset_name": name}
-            dataset = dataset_mod.from_pandas(pd.DataFrame([row]), source=source, name=name)
-            mlflow.log_input(dataset=dataset, context=context)
-        except Exception as exc:
-            print(f"[WARN] Failed to log MLflow input dataset: {exc}")
-
-    @staticmethod
-    def _log_with_optional_registry(
-        log_fn: Any,
-        payload: dict[str, Any],
-        registered_model_name: str | None,
-        warn_label: str,
-    ) -> bool:
-        if registered_model_name:
-            try:
-                log_fn(registered_model_name=str(registered_model_name), **payload)
-                return True
-            except Exception as exc:
-                print(f"[WARN] {warn_label} registry logging failed, retrying without registry: {exc}")
-        log_fn(**payload)
-        return True
-
-    def log_torch_model(self, model: Any, model_name: str, registered_model_name: str | None = None) -> bool:
-        if not self.enabled:
-            return False
-        try:
-            import torch.nn as nn
-
-            if not isinstance(model, nn.Module):
-                return False
-            mlflow_pytorch = importlib.import_module("mlflow.pytorch")
-            payload: dict[str, Any] = {"name": str(model_name), "pytorch_model": model}
-            return self._log_with_optional_registry(
-                mlflow_pytorch.log_model,
-                payload,
-                registered_model_name,
-                "Model",
-            )
-        except Exception as exc:
-            print(f"[WARN] Failed to log MLflow torch model: {exc}")
-            return False
-
-    def log_checkpoint_pyfunc_model(
-        self,
-        checkpoint_path: Path | str,
-        model_name: str,
-        registered_model_name: str | None = None,
-    ) -> bool:
-        if not self.enabled:
-            return False
-        ckpt = Path(checkpoint_path)
-        if not ckpt.exists():
-            return False
-        try:
-            pyfunc = importlib.import_module("mlflow.pyfunc")
-
-            class _CheckpointPyfunc(pyfunc.PythonModel):  # type: ignore[misc,valid-type]
-                def load_context(self, context):  # type: ignore[no-untyped-def]
-                    import torch
-                    from air_quality_imputer.training.model_registry import build_model_from_checkpoint
-
-                    payload = torch.load(context.artifacts["checkpoint"], map_location=torch.device("cpu"), weights_only=False)
-                    self._model = build_model_from_checkpoint(str(payload["model_type"]), payload["config_dict"])
-                    self._model.load_state_dict(payload["state_dict"])
-                    self._model.to(torch.device("cpu"))
-                    self._model.eval()
-
-                def predict(self, context, model_input, params=None):  # type: ignore[no-untyped-def]
-                    del context, params
-                    import numpy as np
-                    import pandas as pd
-
-                    x: Any
-                    if isinstance(model_input, pd.DataFrame):
-                        x = model_input.to_numpy(dtype=np.float32)
-                    else:
-                        x = np.asarray(model_input, dtype=np.float32)
-                    if x.ndim == 2:
-                        x = x[None, :, :]
-                    if x.ndim != 3:
-                        raise ValueError(f"Expected [batch, steps, features], got shape {x.shape}")
-                    y = self._model.impute({"X": x})
-                    if y is None:
-                        raise RuntimeError("Model impute returned None")
-                    return y
-
-            payload: dict[str, Any] = {
-                "name": str(model_name),
-                "python_model": _CheckpointPyfunc(),
-                "artifacts": {"checkpoint": str(ckpt)},
-            }
-            return self._log_with_optional_registry(
-                pyfunc.log_model,
-                payload,
-                registered_model_name,
-                "Pyfunc",
-            )
-        except Exception as exc:
-            print(f"[WARN] Failed to log MLflow pyfunc model from checkpoint: {exc}")
-            return False
-
-    def build_registered_model_name(self, model_name: str, station: str) -> str:
-        return f"aqi-{_slug(model_name)}-{_slug(station)}"

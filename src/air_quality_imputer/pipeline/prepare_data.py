@@ -15,7 +15,6 @@ def run(cfg: DictConfig) -> None:
     training_cfg = cfg.training
     val_mask_cfg = training_cfg.shared_validation_mask
     processed_dir = Path(cfg.paths.processed_dir)
-    scalers_dir = Path(cfg.paths.scalers_dir)
     stations = list(exp.stations)
 
     requested_features = list(exp.features)
@@ -36,7 +35,6 @@ def run(cfg: DictConfig) -> None:
             station=station,
             data_dir=data_dir,
             processed_dir=processed_dir,
-            scalers_dir=scalers_dir,
             features=features,
             block_size=int(exp.block_size),
             step_size=int(exp.step_size),
@@ -54,7 +52,6 @@ def run(cfg: DictConfig) -> None:
             {
                 "station": station,
                 "windows_path": str(datasets["windows_path"]),
-                "n_stations": int(datasets["n_stations"]),
                 "n_train_windows": int(datasets["X_train"].shape[0]),
                 "n_val_windows": int(datasets["X_val_ori"].shape[0]),
                 "n_test_windows": int(datasets["X_test_ori"].shape[0]),

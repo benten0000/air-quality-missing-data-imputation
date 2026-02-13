@@ -11,6 +11,7 @@ from air_quality_imputer.pipeline.common import to_plain_dict
 
 
 DEFAULT_DATASET_NAME = "air_quality"
+COMBINED_STATION_NAME = "combined"
 
 
 def selected_dataset_name(cfg: DictConfig) -> str:
@@ -76,6 +77,70 @@ def _infer_csv_feature_names(data_dir: Path, stations: list[str]) -> list[str]:
         "Set experiment.features or dataset.definitions.<name>.feature_names."
     )
 
+def _available_station_csvs(data_dir: Path) -> dict[str, Path]:
+    stations: dict[str, Path] = {}
+    if not data_dir.exists():
+        return stations
+    for path in sorted(data_dir.glob("*.csv")):
+        if path.name.startswith("."):
+            continue
+        station = path.stem
+        stations[station] = path
+    return stations
+
+
+def _materialize_combined_wide_station(
+    *,
+    data_dir: Path,
+    out_name: str,
+    station_names: list[str],
+    base_features: list[str],
+) -> tuple[Path, list[str]]:
+    if not station_names:
+        raise ValueError(f"No source stations found to build {out_name}.csv in {data_dir}")
+    if not base_features:
+        raise ValueError("No base features available for combined station.")
+
+    wide_cols = [f"{feat}_{station}" for station in station_names for feat in base_features]
+    frames: list[pd.DataFrame] = []
+    reference_index: pd.DatetimeIndex | None = None
+    for station in station_names:
+        path = data_dir / f"{station}.csv"
+        if not path.exists():
+            raise FileNotFoundError(f"Missing station CSV for combined build: {path}")
+        df = pd.read_csv(path, parse_dates=["datetime"])
+        required = ["datetime", *base_features]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            raise ValueError(f"{path} missing columns for combined build: {missing}")
+        df = df[required].copy()
+        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+        df = df.dropna(subset=["datetime"]).sort_values("datetime")
+        df[base_features] = df[base_features].apply(pd.to_numeric, errors="coerce")
+        idx = pd.DatetimeIndex(df["datetime"])
+        if reference_index is None:
+            reference_index = idx
+        elif not reference_index.equals(idx):
+            raise ValueError(
+                "Stations are not aligned on the same datetime index, so combined wide station cannot be built "
+                f"without resampling/alignment. Mismatch found for station={station} in {path}."
+            )
+        frame = df.set_index("datetime")[base_features]
+        frame = frame.rename(columns={feat: f"{feat}_{station}" for feat in base_features})
+        frames.append(frame)
+
+    combined = pd.concat(frames, axis=1, join="inner").sort_index()
+    if combined.empty:
+        raise ValueError("Combined station dataframe is empty.")
+
+    combined = combined.reset_index()
+    combined = combined[["datetime", *wide_cols]]
+
+    out_path = data_dir / f"{out_name}.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(out_path, index=False)
+    return out_path, wide_cols
+
 
 def _ensure_npz_file(*, npz_path: Path, definition: dict[str, Any]) -> Path:
     if npz_path.exists():
@@ -121,16 +186,8 @@ def _resolve_npz_feature_names(
     *,
     payload: Mapping[str, Any],
     n_features: int,
-    requested_features: list[str],
     definition: dict[str, Any],
 ) -> list[str]:
-    if requested_features:
-        if len(requested_features) != n_features:
-            raise ValueError(
-                f"Resolved features length ({len(requested_features)}) does not match npz feature width ({n_features})."
-            )
-        return requested_features
-
     feature_names_cfg = _definition_feature_names(definition)
     if feature_names_cfg:
         if len(feature_names_cfg) != n_features:
@@ -149,6 +206,17 @@ def _resolve_npz_feature_names(
         return names
 
     return _default_feature_names(n_features)
+
+
+def _select_feature_indices(source_features: list[str], requested_features: list[str]) -> tuple[list[int], list[str]]:
+    if not requested_features:
+        return list(range(len(source_features))), source_features
+    lookup = {name: idx for idx, name in enumerate(source_features)}
+    missing = [name for name in requested_features if name not in lookup]
+    if missing:
+        raise KeyError(f"Requested features not found in dataset: {missing}")
+    indices = [int(lookup[name]) for name in requested_features]
+    return indices, requested_features
 
 
 def _resolve_npz_datetime(
@@ -216,12 +284,14 @@ def materialize_npz_timeseries_to_csv(
                 f"npz key {value_key!r} must be a 2D array [timesteps, features], got shape {values.shape}"
             )
         n_rows, n_features = values.shape
-        feature_names = _resolve_npz_feature_names(
+        source_feature_names = _resolve_npz_feature_names(
             payload=payload,
             n_features=n_features,
-            requested_features=requested_features,
             definition=definition,
         )
+        idx, feature_names = _select_feature_indices(source_feature_names, requested_features)
+        values = values[:, idx]
+        n_features = int(values.shape[1])
         datetimes = _resolve_npz_datetime(payload=payload, n_rows=n_rows, definition=definition)
 
         station_ids: np.ndarray | None = None
@@ -278,6 +348,29 @@ def prepare_dataset_inputs(
 
     if loader in {"air_quality_csv", "csv_station_files", "csv"}:
         resolved_features = requested_features or _definition_feature_names(definition)
+        available_csvs = _available_station_csvs(data_dir)
+
+        if COMBINED_STATION_NAME in stations:
+            source_stations = sorted(name for name in available_csvs if name != COMBINED_STATION_NAME)
+            base_features = _definition_feature_names(definition)
+            if not base_features:
+                base_features = _infer_csv_feature_names(data_dir, source_stations)
+            if not requested_features:
+                base_selected = base_features
+            elif set(requested_features).issubset(set(base_features)):
+                base_selected = requested_features
+            else:
+                base_selected = []
+            if base_selected:
+                combined_path, wide_features = _materialize_combined_wide_station(
+                    data_dir=data_dir,
+                    out_name=COMBINED_STATION_NAME,
+                    station_names=source_stations,
+                    base_features=base_selected,
+                )
+                available_csvs[COMBINED_STATION_NAME] = combined_path
+                resolved_features = wide_features
+
         if not resolved_features:
             resolved_features = _infer_csv_feature_names(data_dir, stations)
         return data_dir, {"dataset": dataset_name, "loader": loader, "materialized_files": []}, resolved_features

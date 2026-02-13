@@ -9,6 +9,7 @@ stages:
       - src/air_quality_imputer/training/data_utils.py
       - configs/pipeline/params.yaml
       - data/raw
+      - data/datasets
     params:
       - configs/pipeline/params.yaml:
           - experiment
@@ -16,10 +17,8 @@ stages:
           - training.shared_validation_mask
           - paths.data_dir
           - paths.processed_dir
-          - paths.scalers_dir
     outs:
       - data/processed/splits
-      - data/processed/scalers
 
   train_models:
     cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.train_models --params configs/pipeline/params.yaml
@@ -31,7 +30,6 @@ stages:
       - src/air_quality_imputer/models
       - configs/pipeline/params.yaml
       - data/processed/splits
-      - data/processed/scalers
     params:
       - configs/pipeline/params.yaml:
           - experiment.models
@@ -61,13 +59,9 @@ stages:
           - evaluation
           - models
           - paths.reports_dir
-          - paths.plots_dir
           - paths.metrics_dir
           - tracking
     outs:
       - reports/model_eval
-      - reports/plots/model_eval
     metrics:
       - reports/metrics/model_eval_metrics.json
-    plots:
-      - reports/metrics/summary_by_feature_for_dvc_plots.csv

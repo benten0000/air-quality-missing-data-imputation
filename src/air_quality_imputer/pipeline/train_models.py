@@ -28,42 +28,16 @@ def _load_windows(processed_dir: Path, station: str) -> dict[str, Any]:
     if not windows_path.exists():
         raise FileNotFoundError(f"Missing prepared windows for station {station}: {windows_path}")
     windows = np.load(windows_path)
-    required = ["X_train", "X_val_masked", "X_val_ori", "S_train", "S_val"]
+    required = ["X_train", "X_val_masked", "X_val_ori"]
     for key in required:
         if key not in windows.files:
             raise KeyError(f"Missing key {key!r} in {windows_path}")
-    station_names = windows["station_names"] if "station_names" in windows.files else np.array([station], dtype=str)
     return {
         "X_train": windows["X_train"].astype(np.float32),
         "X_val_masked": windows["X_val_masked"].astype(np.float32),
         "X_val_ori": windows["X_val_ori"].astype(np.float32),
-        "S_train": windows["S_train"].astype(np.int64),
-        "S_val": windows["S_val"].astype(np.int64),
-        "n_stations": int(len(station_names)),
         "windows_path": windows_path,
     }
-
-
-def _upsert_model_index(models_dir: Path, entry: dict[str, Any]) -> None:
-    index_path = models_dir / "model_index.json"
-    index_payload: dict[str, Any] = {"version": 1, "entries": []}
-    if index_path.exists():
-        try:
-            loaded = json.loads(index_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                index_payload = loaded
-        except Exception:
-            index_payload = {"version": 1, "entries": []}
-    entries = index_payload.get("entries")
-    if not isinstance(entries, list):
-        entries = []
-    model_id = str(entry["model_id"])
-    entries = [item for item in entries if not (isinstance(item, dict) and str(item.get("model_id")) == model_id)]
-    entries.append(entry)
-    index_payload["entries"] = entries
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(json.dumps(index_payload, indent=2), encoding="utf-8")
-
 
 def _features_from_manifest(processed_dir: Path) -> list[str]:
     manifest_path = processed_dir / "prepare_manifest.json"
@@ -166,6 +140,8 @@ def run(cfg: DictConfig) -> None:
     block_size = int(exp.block_size)
     stations = list(exp.stations)
     features = _resolve_training_features(exp, processed_dir=processed_dir, stations=stations)
+    if "station" in features:
+        raise ValueError("'station' can no longer be used as a model feature. Remove it from experiment.features.")
     n_features = len(features)
     never_mask_features = set(exp.never_mask_features)
     never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in never_mask_features]
@@ -191,13 +167,11 @@ def run(cfg: DictConfig) -> None:
             )
         dataset_train: dict[str, Any] = {
             "X": prepared["X_train"],
-            "station_ids": prepared["S_train"],
             "never_mask_feature_indices": never_mask_feature_indices,
         }
         dataset_val: dict[str, Any] = {
             "X": prepared["X_val_masked"],
             "X_ori": prepared["X_val_ori"],
-            "station_ids": prepared["S_val"],
         }
 
         for model_name in model_names:
@@ -215,7 +189,6 @@ def run(cfg: DictConfig) -> None:
                 model_cfg,
                 n_features=n_features,
                 block_size=block_size,
-                runtime_params={"n_stations": int(prepared["n_stations"])},
             )
 
             run_name = f"train/{model_name}/{station}/seed-{run_seed}"
@@ -232,16 +205,6 @@ def run(cfg: DictConfig) -> None:
                 if active_run is not None:
                     run_info = getattr(active_run, "info", None)
                     run_id = getattr(run_info, "run_id", None)
-                tracker.log_input_dataset(
-                    name=f"prepared-{station}",
-                    source=str(prepared["windows_path"]),
-                    context="training",
-                    preview={
-                        "station": station,
-                        "n_train_windows": int(prepared["X_train"].shape[0]),
-                        "n_features": int(prepared["X_train"].shape[2]) if prepared["X_train"].ndim == 3 else 0,
-                    },
-                )
                 tracker.log_params(experiment_params, prefix="experiment")
                 tracker.log_params(training_params, prefix="training")
                 tracker.log_params(model_train_mask, prefix="training.train_mask")
@@ -280,45 +243,8 @@ def run(cfg: DictConfig) -> None:
                     },
                     model_path,
                 )
-                _upsert_model_index(
-                    models_dir=models_dir,
-                    entry={
-                        "model_id": model_id,
-                        "model_name": model_name,
-                        "model_type": model_type,
-                        "station": station,
-                        "seed": run_seed,
-                        "checkpoint_path": str(model_path),
-                        "train_run_name": run_name,
-                        "train_run_id": run_id,
-                    },
-                )
                 tracker.log_artifact(model_path, artifact_path="model/files")
-                mlflow_model_name = model_id
-                registered_model_name = (
-                    tracker.build_registered_model_name(model_name=model_name, station=station)
-                    if tracker.register_models
-                    else None
-                )
-                logged_model = tracker.log_torch_model(
-                    model,
-                    model_name=mlflow_model_name,
-                    registered_model_name=registered_model_name,
-                )
-                if not logged_model:
-                    logged_model = tracker.log_checkpoint_pyfunc_model(
-                        checkpoint_path=model_path,
-                        model_name=mlflow_model_name,
-                        registered_model_name=registered_model_name,
-                    )
-                tags_payload = {
-                    "logged_model": str(bool(logged_model)).lower(),
-                    "model_id": model_id,
-                    "mlflow_model_name": mlflow_model_name,
-                }
-                if registered_model_name:
-                    tags_payload["registered_model_name"] = registered_model_name
-                tracker.set_tags(tags_payload)
+                tracker.set_tags({"model_id": model_id, "checkpoint_path": str(model_path), "train_run_id": run_id})
 
                 best_loss = fit_stats.get("best_loss") if isinstance(fit_stats, dict) else None
                 tracker.log_metrics({"train.loss.best": best_loss})

@@ -244,7 +244,8 @@ def prepare_electricity_npz(
 
     output_npz.parent.mkdir(parents=True, exist_ok=True)
     values = df[chosen_clients].to_numpy(dtype=np.float32, copy=False)
-    datetimes = df["datetime"].dt.strftime("%Y-%m-%d %H:%M:%S").to_numpy(dtype=str)
+    dt_series = pd.to_datetime(df["datetime"], errors="coerce")
+    datetimes = dt_series.dt.strftime("%Y-%m-%d %H:%M:%S").to_numpy(dtype=str)
     np.savez_compressed(
         output_npz,
         X=values,

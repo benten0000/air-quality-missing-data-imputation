@@ -35,10 +35,6 @@ class TrainModelsTests(unittest.TestCase):
                 X_val_masked=np.zeros((1, 4, 3), dtype=np.float32),
                 X_val_ori=np.zeros((1, 4, 3), dtype=np.float32),
                 X_test_ori=np.zeros((1, 4, 3), dtype=np.float32),
-                S_train=np.zeros((2,), dtype=np.int64),
-                S_val=np.zeros((1,), dtype=np.int64),
-                S_test=np.zeros((1,), dtype=np.int64),
-                station_names=np.array(["A"], dtype=str),
             )
 
             cfg = OmegaConf.create(
@@ -47,8 +43,8 @@ class TrainModelsTests(unittest.TestCase):
                         "seed": 42,
                         "stations": [station],
                         "models": ["transformer"],
-                        "features": ["station", "PM10", "PM2.5"],
-                        "never_mask_features": ["station"],
+                        "features": ["PM10", "PM2.5", "temperature"],
+                        "never_mask_features": [],
                         "block_size": 4,
                         "mask_mode": "block_feature",
                     },
@@ -99,11 +95,6 @@ class TrainModelsTests(unittest.TestCase):
 
             checkpoint = root / "artifacts" / "models" / "classic_transformer" / station / "transformer.pt"
             self.assertTrue(checkpoint.exists())
-            model_index_path = root / "artifacts" / "models" / "model_index.json"
-            self.assertTrue(model_index_path.exists())
-            payload = json.loads(model_index_path.read_text(encoding="utf-8"))
-            entries = payload.get("entries", [])
-            self.assertTrue(any(str(entry.get("model_name")) == "transformer" for entry in entries))
 
     def test_train_stage_uses_manifest_features_when_config_empty(self):
         with tempfile.TemporaryDirectory() as td:
@@ -123,10 +114,6 @@ class TrainModelsTests(unittest.TestCase):
                 X_val_masked=np.zeros((1, 4, 3), dtype=np.float32),
                 X_val_ori=np.zeros((1, 4, 3), dtype=np.float32),
                 X_test_ori=np.zeros((1, 4, 3), dtype=np.float32),
-                S_train=np.zeros((2,), dtype=np.int64),
-                S_val=np.zeros((1,), dtype=np.int64),
-                S_test=np.zeros((1,), dtype=np.int64),
-                station_names=np.array(["A"], dtype=str),
             )
 
             cfg = OmegaConf.create(
@@ -186,10 +173,6 @@ class TrainModelsTests(unittest.TestCase):
                 X_val_masked=np.zeros((1, 4, 3), dtype=np.float32),
                 X_val_ori=np.zeros((1, 4, 3), dtype=np.float32),
                 X_test_ori=np.zeros((1, 4, 3), dtype=np.float32),
-                S_train=np.zeros((2,), dtype=np.int64),
-                S_val=np.zeros((1,), dtype=np.int64),
-                S_test=np.zeros((1,), dtype=np.int64),
-                station_names=np.array(["A"], dtype=str),
             )
 
             cfg = OmegaConf.create(

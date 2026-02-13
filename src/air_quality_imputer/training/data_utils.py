@@ -1,19 +1,7 @@
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-
-
-def _concat_or_empty(parts: list[np.ndarray], shape: tuple[int, ...], dtype) -> np.ndarray:
-    return np.concatenate(parts, axis=0) if parts else np.empty(shape, dtype=dtype)
-
-
-def _concat_frames(frames: list[pd.DataFrame], columns: list[str]) -> pd.DataFrame:
-    if not frames:
-        return pd.DataFrame(columns=columns)
-    return pd.concat(frames, ignore_index=True)[columns]
 
 
 def create_sliding_windows(data: np.ndarray, window_size: int, step_size: int = 1) -> np.ndarray:
@@ -30,6 +18,20 @@ def train_val_test_split(data: np.ndarray, train_ratio: float = 0.8, val_ratio: 
     train_end = int(train_ratio * n)
     val_end = train_end + int(val_ratio * n)
     return data[:train_end], data[train_end:val_end], data[val_end:]
+
+def standardize_splits(
+    train: np.ndarray,
+    val: np.ndarray,
+    test: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mean = np.nanmean(train, axis=0)
+    std = np.nanstd(train, axis=0)
+    std = np.where(np.isfinite(std) & (std > 0), std, 1.0)
+
+    def _scale(arr: np.ndarray) -> np.ndarray:
+        return ((arr - mean) / std).astype(np.float32, copy=False)
+
+    return _scale(train), _scale(val), _scale(test)
 
 
 def mask_windows(x: np.ndarray, missing_rate: float, seed: int) -> np.ndarray:
@@ -178,21 +180,6 @@ def mask_windows_block_feature(
     return masked
 
 
-def _inject_station_feature(
-    windows: np.ndarray,
-    station_id: int,
-    n_stations: int,
-    station_feature_index: int | None,
-) -> np.ndarray:
-    if station_feature_index is None:
-        return windows
-    station_value = 0.0 if n_stations <= 1 else float(station_id) / float(n_stations - 1)
-    station_channel = np.full((windows.shape[0], windows.shape[1], 1), station_value, dtype=np.float32)
-    left = windows[:, :, :station_feature_index]
-    right = windows[:, :, station_feature_index:]
-    return np.concatenate([left, station_channel, right], axis=2).astype(np.float32, copy=False)
-
-
 def _restore_never_mask_features(
     masked: np.ndarray,
     original: np.ndarray,
@@ -252,7 +239,6 @@ def prepare_station_datasets(
     station: str,
     data_dir: Path,
     processed_dir: Path,
-    scalers_dir: Path,
     features: list[str],
     block_size: int,
     step_size: int,
@@ -270,117 +256,49 @@ def prepare_station_datasets(
     if not file_path.exists():
         raise FileNotFoundError(f"Missing file for station {station}: {file_path}")
 
+    if not features:
+        raise ValueError("No features provided. Set experiment.features or dataset.definitions.<name>.feature_names.")
+    if "station" in features:
+        raise ValueError("'station' can no longer be used as a model feature. Remove it from experiment.features.")
+
     df = pd.read_csv(file_path, parse_dates=["datetime"])
-    model_feature_cols = list(features)
-    numeric_feature_cols = [c for c in model_feature_cols if c != "station"]
-    station_feature_index = model_feature_cols.index("station") if "station" in model_feature_cols else None
-    if not numeric_feature_cols:
-        raise ValueError("No numeric features provided. Remove 'station' from features or add valid numeric features.")
-    required_cols = ["datetime"] + numeric_feature_cols
-    missing_cols = [c for c in required_cols if c not in df.columns]
+    if "station" in df.columns:
+        unique = df["station"].dropna().astype(str).unique().tolist()
+        if len(unique) > 1:
+            raise ValueError(
+                f"{file_path} contains multiple station values ({len(unique)}). "
+                "Split the file into one CSV per station."
+            )
+    required_cols = ["datetime", *features]
+    missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         raise ValueError(f"Station {station} missing columns: {missing_cols}")
 
-    if "station" in df.columns:
-        df["station"] = df["station"].astype(str)
-    else:
-        df = df.assign(station=str(station))
+    df = df[required_cols].copy()
+    df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+    df = df.dropna(subset=["datetime"]).sort_values("datetime")
+    if df.empty:
+        raise ValueError(f"No valid rows found in {file_path}")
+    df[features] = df[features].apply(pd.to_numeric, errors="coerce")
 
-    group_frames: list[tuple[str, pd.DataFrame]] = []
-    for station_name, station_df in df.groupby("station", sort=True):
-        cdf = station_df[["datetime"] + numeric_feature_cols].copy()
-        cdf["datetime"] = pd.to_datetime(cdf["datetime"], errors="coerce")
-        cdf = cdf.dropna(subset=["datetime"]).sort_values("datetime")
-        if cdf.empty:
-            continue
-        cdf[numeric_feature_cols] = cdf[numeric_feature_cols].apply(pd.to_numeric, errors="coerce")
-        group_frames.append((str(station_name), cdf))
-
-    if not group_frames:
-        raise ValueError(f"No valid station groups found in {file_path}")
-
-    train_frames = []
-    val_frames = []
-    test_frames = []
-    train_arrays = []
-    grouped_splits = []
-    for station_name, cdf in group_frames:
-        data = cdf[numeric_feature_cols].to_numpy(dtype=np.float32)
-        dt = cdf["datetime"].to_numpy()
-        data_train, data_val, data_test = train_val_test_split(data)
-        dt_train, dt_val, dt_test = train_val_test_split(dt)
-
-        for split_data, split_dt, out_list in (
-            (data_train, dt_train, train_frames),
-            (data_val, dt_val, val_frames),
-            (data_test, dt_test, test_frames),
-        ):
-            out_list.append(
-                pd.DataFrame(split_data, columns=numeric_feature_cols).assign(
-                    datetime=split_dt,
-                    station=station_name,
-                )
-            )
-        if len(data_train) > 0:
-            train_arrays.append(data_train)
-        grouped_splits.append((station_name, data_train, data_val, data_test))
-
-    if not train_arrays:
+    values = df[features].to_numpy(dtype=np.float32)
+    train, val, test = train_val_test_split(values)
+    if len(train) == 0:
         raise ValueError("No train rows available after split; cannot fit scaler.")
+
+    train_scaled, val_scaled, test_scaled = standardize_splits(train=train, val=val, test=test)
+
+    def _windows(arr: np.ndarray) -> np.ndarray:
+        if len(arr) < block_size:
+            return np.empty((0, block_size, len(features)), dtype=np.float32)
+        return create_sliding_windows(arr, window_size=block_size, step_size=step_size)
+
+    X_train = _windows(train_scaled)
+    X_val_ori = _windows(val_scaled)
+    X_test_ori = _windows(test_scaled)
 
     out_data_station = processed_dir / station
     out_data_station.mkdir(parents=True, exist_ok=True)
-
-    scaler = StandardScaler()
-    scaler.fit(np.concatenate(train_arrays, axis=0))
-
-    out_scaler_station = scalers_dir / station
-    out_scaler_station.mkdir(parents=True, exist_ok=True)
-    joblib.dump(scaler, out_scaler_station / "scaler.pkl")
-
-    station_names = sorted(st for st, *_ in grouped_splits)
-    station_to_id = {name: i for i, name in enumerate(station_names)}
-
-    X_train_parts = []
-    X_val_parts = []
-    X_test_parts = []
-    S_train_parts = []
-    S_val_parts = []
-    S_test_parts = []
-
-    def _append_windows(parts: list[np.ndarray], sid_parts: list[np.ndarray], split_data: np.ndarray, sid: int) -> None:
-        if len(split_data) < block_size:
-            return
-        win = create_sliding_windows(
-            scaler.transform(split_data),
-            window_size=block_size,
-            step_size=step_size,
-        )
-        win = _inject_station_feature(win, sid, len(station_names), station_feature_index)
-        parts.append(win)
-        sid_parts.append(np.full((len(win),), sid, dtype=np.int64))
-
-    for station_name, data_train, data_val, data_test in grouped_splits:
-        sid = station_to_id[station_name]
-        _append_windows(X_train_parts, S_train_parts, data_train, sid)
-        _append_windows(X_val_parts, S_val_parts, data_val, sid)
-        _append_windows(X_test_parts, S_test_parts, data_test, sid)
-
-    n_feat = len(model_feature_cols)
-    X_train = _concat_or_empty(X_train_parts, (0, block_size, n_feat), np.float32)
-    X_val_ori = _concat_or_empty(X_val_parts, (0, block_size, n_feat), np.float32)
-    X_test_ori = _concat_or_empty(X_test_parts, (0, block_size, n_feat), np.float32)
-    S_train = _concat_or_empty(S_train_parts, (0,), np.int64)
-    S_val = _concat_or_empty(S_val_parts, (0,), np.int64)
-    S_test = _concat_or_empty(S_test_parts, (0,), np.int64)
-
-    split_cols = ["station", "datetime"] + numeric_feature_cols
-    train_out = _concat_frames(train_frames, split_cols)
-    val_out = _concat_frames(val_frames, split_cols)
-    test_out = _concat_frames(test_frames, split_cols)
-    train_out.to_csv(out_data_station / "train_data.csv", index=False)
-    val_out.to_csv(out_data_station / "val_data.csv", index=False)
-    test_out.to_csv(out_data_station / "test_data.csv", index=False)
 
     X_val_masked = mask_windows_by_mode(
         X_val_ori,
@@ -400,10 +318,6 @@ def prepare_station_datasets(
         X_val_ori=X_val_ori,
         X_val_masked=X_val_masked,
         X_test_ori=X_test_ori,
-        S_train=S_train,
-        S_val=S_val,
-        S_test=S_test,
-        station_names=np.array(station_names, dtype=str),
     )
 
     return {
@@ -411,10 +325,6 @@ def prepare_station_datasets(
         "X_val_ori": X_val_ori,
         "X_val_masked": X_val_masked,
         "X_test_ori": X_test_ori,
-        "S_train": S_train,
-        "S_val": S_val,
-        "S_test": S_test,
-        "n_stations": len(station_names),
-        "feature_cols": model_feature_cols,
+        "feature_cols": list(features),
         "windows_path": out_data_station / "windows.npz",
     }

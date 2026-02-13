@@ -6,8 +6,13 @@ stages:
     deps:
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: e0a8f984138eb1285d2217511240abcd
-      size: 4059
+      md5: 5c5cbec2a0d60961af2280a58941af59
+      size: 3385
+    - path: data/datasets
+      hash: md5
+      md5: 394670e7e653db66ca30b6313376f4c2.dir
+      size: 62114935
+      nfiles: 16
     - path: data/raw
       hash: md5
       md5: 2e63b05f91bd8adf716e3332c0d18150.dir
@@ -23,16 +28,16 @@ stages:
       size: 1962
     - path: src/air_quality_imputer/pipeline/dataset_adapters.py
       hash: md5
-      md5: ad390eead9555c9f01fdd9298403af08
-      size: 11963
+      md5: 1c4408acba720870aebe78673744a82f
+      size: 16134
     - path: src/air_quality_imputer/pipeline/prepare_data.py
       hash: md5
-      md5: 0c1a1ef383e47195d65832e8fa218c00
-      size: 3522
+      md5: 96e9a2e284db4ad6c6ef5fb72b8600f0
+      size: 3380
     - path: src/air_quality_imputer/training/data_utils.py
       hash: md5
-      md5: 2897ed17460bde852f529dc2681c7807
-      size: 15814
+      md5: ad9ba7255b4f83af48e497793e9cf8b1
+      size: 12019
     params:
       configs/pipeline/params.yaml:
         dataset:
@@ -50,27 +55,25 @@ stages:
               - wind_speed
               - clouds
               - wind_direction
+            beijing_air_quality:
+              loader: air_quality_csv
+              data_dir: data/datasets/beijing_air_quality/materialized
+              feature_names:
+              - PM2.5
+              - PM10
+              - SO2
+              - NO2
+              - CO
+              - O3
+              - TEMP
+              - PRES
+              - DEWP
+              - RAIN
+              - WSPM
             electricity:
               loader: npz
               npz_path: data/datasets/electricity/npz/electricity.npz
               data_dir: data/datasets/electricity/materialized
-              feature_names:
-              - MT_001
-              - MT_002
-              - MT_003
-              - MT_004
-              - MT_005
-              - MT_006
-              - MT_007
-              - MT_008
-              - MT_009
-              - MT_010
-              - MT_011
-              - MT_012
-              - MT_013
-              - MT_014
-              - MT_015
-              - MT_016
               value_key: X
               datetime_key: datetime
               feature_names_key: feature_names
@@ -80,24 +83,10 @@ stages:
                 start_client: 1
                 n_clients: 16
                 resample_frequency: 1h
-            physionet2012:
-              loader: npz
-              npz_path: data/datasets/physionet2012/npz/physionet2012.npz
-              data_dir: data/datasets/physionet2012/materialized
-              value_key: X
-              datetime_key: datetime
-              feature_names_key: feature_names
-            ett:
-              loader: npz
-              npz_path: data/datasets/ett/npz/ett.npz
-              data_dir: data/datasets/ett/materialized
-              value_key: X
-              datetime_key: datetime
-              feature_names_key: feature_names
         experiment:
-          dataset: electricity
+          dataset: beijing_air_quality
           stations:
-          - electricity
+          - combined
           models:
           - transformer
           - saits
@@ -108,7 +97,6 @@ stages:
           seed: 42
         paths.data_dir: data/raw
         paths.processed_dir: data/processed/splits
-        paths.scalers_dir: data/processed/scalers
         training.shared_validation_mask:
           missing_rate: 0.2
           mask_mode: random
@@ -118,34 +106,24 @@ stages:
           feature_block_prob: 0.6
           block_no_overlap: true
     outs:
-    - path: data/processed/scalers
-      hash: md5
-      md5: d1738b64e4adf35f012b824de2050906.dir
-      size: 967
-      nfiles: 1
     - path: data/processed/splits
       hash: md5
-      md5: e85b62f22d4fbfe2eb2d191726b79f8a.dir
-      size: 127400
-      nfiles: 5
+      md5: 609e7a7f90efa81865440234206b277a.dir
+      size: 24206076
+      nfiles: 2
   train_models:
     cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.train_models 
       --params configs/pipeline/params.yaml
     deps:
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: e0a8f984138eb1285d2217511240abcd
-      size: 4059
-    - path: data/processed/scalers
-      hash: md5
-      md5: d1738b64e4adf35f012b824de2050906.dir
-      size: 967
-      nfiles: 1
+      md5: 5c5cbec2a0d60961af2280a58941af59
+      size: 3385
     - path: data/processed/splits
       hash: md5
-      md5: e85b62f22d4fbfe2eb2d191726b79f8a.dir
-      size: 127400
-      nfiles: 5
+      md5: 609e7a7f90efa81865440234206b277a.dir
+      size: 24206076
+      nfiles: 2
     - path: src/air_quality_imputer/models
       hash: md5
       md5: 75c35388b15df3f355a914e48ec55df5.dir
@@ -157,12 +135,12 @@ stages:
       size: 1962
     - path: src/air_quality_imputer/pipeline/train_models.py
       hash: md5
-      md5: 1cf370b059e7d7c508b47c886d44b629
-      size: 14326
+      md5: 26cc6e8e3178a70f6f3c32ed01f6e351
+      size: 10971
     - path: src/air_quality_imputer/tracking/mlflow_utils.py
       hash: md5
-      md5: a3111f5d50ca7c1d0a61b935e0957a3d
-      size: 10444
+      md5: 6cad2ec11420475b6b025955d10161f4
+      size: 4863
     - path: src/air_quality_imputer/training/model_registry.py
       hash: md5
       md5: 7704f2c9969392d59ec578ca1c3b17d1
@@ -228,12 +206,10 @@ stages:
           enabled: true
           repo_owner: PetelinekBenjamin
           repo_name: air-quality-missing-data-imputation
-          experiment_name: air-quality-imputer
-          register_models: true
         training:
           epochs: 100
           batch_size: 256
-          lr: 0.0008
+          lr: 0.001
           patience: 20
           min_delta: 0.0001
           train_mask:
@@ -259,27 +235,27 @@ stages:
     outs:
     - path: artifacts/models
       hash: md5
-      md5: 34cf10b159b0544473ac69cdddd0b9a3.dir
-      size: 32726977
-      nfiles: 3
+      md5: 748ed8c037a7fd4f61f97f8e20669815.dir
+      size: 34937843
+      nfiles: 2
   evaluate_models:
     cmd: PYTHONPATH=src python -m air_quality_imputer.pipeline.evaluate_models 
       --params configs/pipeline/params.yaml
     deps:
     - path: artifacts/models
       hash: md5
-      md5: 34cf10b159b0544473ac69cdddd0b9a3.dir
-      size: 32726977
-      nfiles: 3
+      md5: 748ed8c037a7fd4f61f97f8e20669815.dir
+      size: 34937843
+      nfiles: 2
     - path: configs/pipeline/params.yaml
       hash: md5
-      md5: e0a8f984138eb1285d2217511240abcd
-      size: 4059
+      md5: 5c5cbec2a0d60961af2280a58941af59
+      size: 3385
     - path: data/processed/splits
       hash: md5
-      md5: e85b62f22d4fbfe2eb2d191726b79f8a.dir
-      size: 127400
-      nfiles: 5
+      md5: 609e7a7f90efa81865440234206b277a.dir
+      size: 24206076
+      nfiles: 2
     - path: src/air_quality_imputer/models
       hash: md5
       md5: 75c35388b15df3f355a914e48ec55df5.dir
@@ -291,16 +267,16 @@ stages:
       size: 1962
     - path: src/air_quality_imputer/pipeline/evaluate_models.py
       hash: md5
-      md5: a00aa59a89ccaa44f3650ccdf8c4eeee
-      size: 25620
+      md5: 13b34e1a6fc465bc229a49a6bfeb8473
+      size: 14451
     - path: src/air_quality_imputer/tracking/mlflow_utils.py
       hash: md5
-      md5: a3111f5d50ca7c1d0a61b935e0957a3d
-      size: 10444
+      md5: 6cad2ec11420475b6b025955d10161f4
+      size: 4863
     - path: src/air_quality_imputer/training/data_utils.py
       hash: md5
-      md5: 2897ed17460bde852f529dc2681c7807
-      size: 15814
+      md5: ad9ba7255b4f83af48e497793e9cf8b1
+      size: 12019
     - path: src/air_quality_imputer/training/model_registry.py
       hash: md5
       md5: 7704f2c9969392d59ec578ca1c3b17d1
@@ -315,17 +291,13 @@ stages:
           block_missing_prob: 0.35
           feature_block_prob: 0.6
           block_no_overlap: true
-          model_ids:
+          mlflow_model_refs:
             transformer:
             saits:
-          evaluation:
-            mlflow_model_refs:
-              transformer:
-              saits:
         experiment:
-          dataset: electricity
+          dataset: beijing_air_quality
           stations:
-          - electricity
+          - combined
           models:
           - transformer
           - saits
@@ -385,30 +357,18 @@ stages:
               optimizer_eps: 1e-08
               learning_rate:
         paths.metrics_dir: reports/metrics
-        paths.plots_dir: reports/plots/model_eval
         paths.reports_dir: reports/model_eval
         tracking:
           enabled: true
           repo_owner: PetelinekBenjamin
           repo_name: air-quality-missing-data-imputation
-          experiment_name: air-quality-imputer
-          register_models: true
     outs:
     - path: reports/metrics/model_eval_metrics.json
       hash: md5
-      md5: 9a97f7a4d33f5e964c47f4a3afbe53be
-      size: 411
-    - path: reports/metrics/summary_by_feature_for_dvc_plots.csv
-      hash: md5
-      md5: 0fd4bae4199bc1b32811c8b9472fe785
-      size: 2194
+      md5: 29377807e8d6ac94774ba1b34f261afe
+      size: 408
     - path: reports/model_eval
       hash: md5
-      md5: 780f21047483cbdaac178e07a94ccf64.dir
-      size: 7079
-      nfiles: 10
-    - path: reports/plots/model_eval
-      hash: md5
-      md5: e4a562587ec08af6fcdf89714c122ab6.dir
-      size: 129283
-      nfiles: 2
+      md5: 5bc4f241f30ae020498a9d06a7c72fed.dir
+      size: 322
+      nfiles: 3
