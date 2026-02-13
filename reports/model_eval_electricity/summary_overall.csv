@@ -1,2 +1,0 @@
-model_type,n_stations,n_eval,mae,rmse
-classic_transformer,1,7437,0.07725805044174194,0.09932167083024979

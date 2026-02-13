@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import cast
 
 import numpy as np
 import torch
@@ -28,10 +27,8 @@ class RotaryPositionalEncoding(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         _, _, seq_len, _ = x.size()
-        cos_cached = cast(torch.Tensor, self.cos_cached)
-        sin_cached = cast(torch.Tensor, self.sin_cached)
-        cos = cos_cached[:seq_len].unsqueeze(0).unsqueeze(0)
-        sin = sin_cached[:seq_len].unsqueeze(0).unsqueeze(0)
+        cos = self.cos_cached[:seq_len].unsqueeze(0).unsqueeze(0)
+        sin = self.sin_cached[:seq_len].unsqueeze(0).unsqueeze(0)
         x1, x2 = x[..., ::2], x[..., 1::2]
         x_rot = torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
         return x_rot
@@ -46,11 +43,6 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         rms = torch.rsqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps)
         return x * rms * self.weight
-
-
-def get_diagonal_mask(seq_len: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    diag = torch.eye(seq_len, device=device, dtype=dtype)
-    return diag * -1e9
 
 
 class MultiHeadSelfAttention(nn.Module):
@@ -79,7 +71,7 @@ class MultiHeadSelfAttention(nn.Module):
         q = self.rotary(q)
         k = self.rotary(k)
 
-        attn_mask = get_diagonal_mask(seq_len, x.device, q.dtype)
+        attn_mask = torch.eye(seq_len, device=x.device, dtype=q.dtype) * -1e9
         y = F.scaled_dot_product_attention(
             q,
             k,
@@ -399,6 +391,3 @@ class TransformerImputer(nn.Module):
         except Exception as exc:
             print(f"Napaka pri zapolnjevanju manjkajocih vrednosti: {exc}")
             return None
-
-    def number_of_params(self):
-        return sum(p.numel() for p in self.parameters())

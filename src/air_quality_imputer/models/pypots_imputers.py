@@ -52,14 +52,6 @@ class _PyPOTSBase:
     def train(self):
         return self
 
-    def number_of_params(self) -> int:
-        if self.model is None:
-            return 0
-        torch_model = getattr(self.model, "model", None)
-        if torch_model is None:
-            return 0
-        return int(sum(p.numel() for p in torch_model.parameters()))
-
     def impute(self, dataset: dict[str, np.ndarray]) -> np.ndarray | None:
         if self.model is None:
             return None

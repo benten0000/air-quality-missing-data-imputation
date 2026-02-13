@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any
@@ -23,74 +21,61 @@ from air_quality_imputer.training.model_registry import build_model_from_cfg, co
 SUPPORTED_MODELS = {"transformer", "saits"}
 
 
-def _load_windows(processed_dir: Path, station: str) -> dict[str, Any]:
-    windows_path = processed_dir / station / "windows.npz"
-    if not windows_path.exists():
-        raise FileNotFoundError(f"Missing prepared windows for station {station}: {windows_path}")
-    windows = np.load(windows_path)
-    required = ["X_train", "X_val_masked", "X_val_ori"]
-    for key in required:
-        if key not in windows.files:
-            raise KeyError(f"Missing key {key!r} in {windows_path}")
-    return {
-        "X_train": windows["X_train"].astype(np.float32),
-        "X_val_masked": windows["X_val_masked"].astype(np.float32),
-        "X_val_ori": windows["X_val_ori"].astype(np.float32),
-        "windows_path": windows_path,
-    }
+def _load_windows(processed_dir: Path, station: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, Path]:
+    path = processed_dir / station / "windows.npz"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing prepared windows for station {station}: {path}")
+    w = np.load(path)
+    X_train = w["X_train"].astype(np.float32)
+    X_val_masked = w["X_val_masked"].astype(np.float32)
+    X_val_ori = w["X_val_ori"].astype(np.float32)
+    return X_train, X_val_masked, X_val_ori, path
+
 
 def _features_from_manifest(processed_dir: Path) -> list[str]:
-    manifest_path = processed_dir / "prepare_manifest.json"
-    if not manifest_path.exists():
+    path = processed_dir / "prepare_manifest.json"
+    if not path.exists():
         return []
     try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return []
-    values = payload.get("resolved_features") if isinstance(payload, dict) else None
-    if not isinstance(values, list):
-        return []
-    features = [str(item).strip() for item in values if str(item).strip()]
-    return features
+    items = payload.get("resolved_features") if isinstance(payload, dict) else None
+    return [str(x).strip() for x in items if str(x).strip()] if isinstance(items, list) else []
 
 
-def _resolve_training_features(exp: DictConfig, processed_dir: Path, stations: list[str]) -> list[str]:
-    configured = [str(item).strip() for item in list(exp.features) if str(item).strip()]
+def _resolve_features(exp: DictConfig, processed_dir: Path, stations: list[str]) -> list[str]:
+    configured = [str(x).strip() for x in list(exp.features) if str(x).strip()]
     if configured:
         return configured
     from_manifest = _features_from_manifest(processed_dir)
     if from_manifest:
         return from_manifest
     if not stations:
-        raise ValueError("No stations configured and no features available in manifest.")
-    sample = _load_windows(processed_dir=processed_dir, station=stations[0])
-    width = int(sample["X_train"].shape[2]) if sample["X_train"].ndim == 3 else 0
-    if width <= 0:
+        raise ValueError("No stations configured and no features available.")
+    X_train, *_ = _load_windows(processed_dir, stations[0])
+    if X_train.ndim != 3 or X_train.shape[2] <= 0:
         raise ValueError("Unable to infer features from prepared windows.")
-    return [f"feature_{idx + 1:03d}" for idx in range(width)]
+    return [f"feature_{i+1:03d}" for i in range(int(X_train.shape[2]))]
 
 
-def _apply_transformer_train_mask(model_cfg: DictConfig, train_mask_cfg: dict[str, Any]) -> DictConfig:
-    if str(model_cfg.type) != "classic_transformer" or not train_mask_cfg:
+def _apply_transformer_train_mask(model_cfg: DictConfig, train_mask: dict[str, Any]) -> DictConfig:
+    if str(model_cfg.type) != "classic_transformer" or not train_mask:
         return model_cfg
-    mapping = {
-        "mode": "train_mask_mode",
-        "missing_rate": "train_missing_rate",
-        "block_min_len": "train_block_min_len",
-        "block_max_len": "train_block_max_len",
-        "block_missing_prob": "train_block_missing_prob",
-        "feature_block_prob": "train_feature_block_prob",
-        "block_no_overlap": "train_block_no_overlap",
-    }
-    overrides: dict[str, Any] = {}
-    for src_key, dst_key in mapping.items():
-        if src_key in train_mask_cfg and train_mask_cfg[src_key] is not None:
-            overrides[dst_key] = train_mask_cfg[src_key]
-    if not overrides:
-        return model_cfg
-    payload = to_plain_dict(model_cfg)
+    mapping = (
+        ("mode", "train_mask_mode"),
+        ("missing_rate", "train_missing_rate"),
+        ("block_min_len", "train_block_min_len"),
+        ("block_max_len", "train_block_max_len"),
+        ("block_missing_prob", "train_block_missing_prob"),
+        ("feature_block_prob", "train_feature_block_prob"),
+        ("block_no_overlap", "train_block_no_overlap"),
+    )
     params = to_plain_dict(model_cfg.get("params"))
-    params.update(overrides)
+    for src, dst in mapping:
+        if src in train_mask and train_mask[src] is not None:
+            params[dst] = train_mask[src]
+    payload = to_plain_dict(model_cfg)
     payload["params"] = params
     merged = OmegaConf.create(payload)
     if not isinstance(merged, DictConfig):
@@ -98,34 +83,19 @@ def _apply_transformer_train_mask(model_cfg: DictConfig, train_mask_cfg: dict[st
     return merged
 
 
-def _training_common_params(train_cfg: DictConfig) -> dict[str, Any]:
-    payload = to_plain_dict(train_cfg)
-    payload.pop("train_mask", None)
-    payload.pop("shared_validation_mask", None)
-    return payload
+def _model_train_mask(train_cfg: DictConfig, model_name: str) -> dict[str, Any]:
+    cfg = to_plain_dict(train_cfg.get("train_mask"))
+    value = cfg.get(model_name)
+    if isinstance(value, dict):
+        return {str(k): v for k, v in value.items()}
+    return {"mode": "random", "missing_rate": 0.2} if model_name == "saits" else {}
 
 
-def _model_train_mask_cfg(train_cfg: DictConfig, model_name: str) -> dict[str, Any]:
-    train_mask_cfg = to_plain_dict(train_cfg.get("train_mask"))
-    item = train_mask_cfg.get(model_name)
-    if isinstance(item, dict):
-        return {str(key): value for key, value in item.items()}
-    if model_name == "saits":
-        return {"mode": "random", "missing_rate": 0.2}
-    return {}
-
-
-def _validate_saits_train_mask(train_mask_cfg: dict[str, Any]) -> None:
-    mode = str(train_mask_cfg.get("mode", "random")).lower()
-    if mode != "random":
-        raise ValueError(f"SAITS supports only random train mask mode, got: {mode}")
-    if "missing_rate" in train_mask_cfg:
-        missing_rate = float(train_mask_cfg["missing_rate"])
-        if abs(missing_rate - 0.2) > 1e-12:
-            raise ValueError(
-                "Current SAITS backend uses fixed MCAR rate=0.2 during training. "
-                f"Configured training.train_mask.saits.missing_rate={missing_rate}"
-            )
+def _validate_saits_mask(train_mask: dict[str, Any]) -> None:
+    if str(train_mask.get("mode", "random")).lower() != "random":
+        raise ValueError("SAITS supports only random train mask mode.")
+    if "missing_rate" in train_mask and abs(float(train_mask["missing_rate"]) - 0.2) > 1e-12:
+        raise ValueError("Current SAITS backend uses fixed MCAR rate=0.2 during training.")
 
 
 def run(cfg: DictConfig) -> None:
@@ -134,89 +104,58 @@ def run(cfg: DictConfig) -> None:
     base_seed = int(exp.seed)
     set_global_seed(base_seed)
 
-    processed_dir = Path(cfg.paths.processed_dir)
-    models_dir = Path(cfg.paths.models_dir)
-
-    block_size = int(exp.block_size)
     stations = list(exp.stations)
-    features = _resolve_training_features(exp, processed_dir=processed_dir, stations=stations)
-    if "station" in features:
-        raise ValueError("'station' can no longer be used as a model feature. Remove it from experiment.features.")
-    n_features = len(features)
-    never_mask_features = set(exp.never_mask_features)
-    never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in never_mask_features]
     model_names = list(exp.models)
     unsupported = sorted(set(model_names) - SUPPORTED_MODELS)
     if unsupported:
         raise ValueError(f"Unsupported models for V1 pipeline: {unsupported}")
 
+    processed_dir = Path(cfg.paths.processed_dir)
+    models_dir = Path(cfg.paths.models_dir)
+    features = _resolve_features(exp, processed_dir=processed_dir, stations=stations)
+    if "station" in features:
+        raise ValueError("'station' can no longer be used as a model feature. Remove it from experiment.features.")
+    n_features = len(features)
+    never_mask_set = set(exp.never_mask_features)
+    never_mask_idx = [i for i, f in enumerate(features) if f in never_mask_set]
+
     tracking_cfg = to_plain_dict(cfg.get("tracking"))
     tracking_cfg["dataset_name"] = str(exp.get("dataset", "air_quality"))
     tracker = MLflowTracker(tracking_cfg)
-    experiment_params = to_plain_dict(exp)
-    experiment_params["resolved_features"] = features
-    training_params = _training_common_params(train_cfg)
 
     for station in stations:
-        prepared = _load_windows(processed_dir=processed_dir, station=station)
-        station_n_features = int(prepared["X_train"].shape[2]) if prepared["X_train"].ndim == 3 else 0
-        if station_n_features != n_features:
-            raise ValueError(
-                f"Feature mismatch for station {station}: prepared windows have {station_n_features} "
-                f"features, but resolved feature list has {n_features}."
-            )
-        dataset_train: dict[str, Any] = {
-            "X": prepared["X_train"],
-            "never_mask_feature_indices": never_mask_feature_indices,
-        }
-        dataset_val: dict[str, Any] = {
-            "X": prepared["X_val_masked"],
-            "X_ori": prepared["X_val_ori"],
-        }
+        X_train, X_val_masked, X_val_ori, windows_path = _load_windows(processed_dir, station)
+        if X_train.ndim != 3 or int(X_train.shape[2]) != n_features:
+            raise ValueError(f"Feature mismatch for station {station}.")
+        train_set = {"X": X_train, "never_mask_feature_indices": never_mask_idx}
+        val_set = {"X": X_val_masked, "X_ori": X_val_ori}
 
         for model_name in model_names:
             model_cfg = get_model_cfg_from_params(cfg, model_name)
-            model_train_mask = _model_train_mask_cfg(train_cfg, model_name)
-            model_cfg = _apply_transformer_train_mask(model_cfg, model_train_mask)
-            model_params = to_plain_dict(model_cfg)
-            model_inner_params = to_plain_dict(model_cfg.get("params"))
+            train_mask = _model_train_mask(train_cfg, model_name)
             if str(model_cfg.type) == "saits":
-                _validate_saits_train_mask(model_train_mask)
-            run_seed = derive_seed(base_seed, station=station, model_name=model_name)
-            set_global_seed(run_seed)
+                _validate_saits_mask(train_mask)
+            model_cfg = _apply_transformer_train_mask(model_cfg, train_mask)
 
+            seed = derive_seed(base_seed, station=station, model_name=model_name)
+            set_global_seed(seed)
             model, model_config, model_type, checkpoint_name = build_model_from_cfg(
                 model_cfg,
                 n_features=n_features,
-                block_size=block_size,
+                block_size=int(exp.block_size),
             )
 
-            run_name = f"train/{model_name}/{station}/seed-{run_seed}"
-            tags = {
-                "stage": "train",
-                "model": model_name,
-                "station": station,
-                "seed": run_seed,
-                "mask_mode": str(model_train_mask.get("mode", model_inner_params.get("train_mask_mode", "mcar"))),
-            }
-
-            with tracker.start_run(run_name=run_name, tags=tags) as active_run:
-                run_id = None
-                if active_run is not None:
-                    run_info = getattr(active_run, "info", None)
-                    run_id = getattr(run_info, "run_id", None)
-                tracker.log_params(experiment_params, prefix="experiment")
-                tracker.log_params(training_params, prefix="training")
-                tracker.log_params(model_train_mask, prefix="training.train_mask")
-                tracker.log_params(model_params, prefix=f"models.{model_name}")
-                tracker.log_params(
-                    {"n_features": n_features, "block_size": block_size},
-                    prefix="runtime",
-                )
+            run_name = f"train/{model_name}/{station}/seed-{seed}"
+            with tracker.start_run(run_name=run_name, tags={"stage": "train", "model": model_name, "station": station, "seed": seed}):
+                tracker.log_params(to_plain_dict(exp) | {"resolved_features": features}, prefix="experiment")
+                tracker.log_params(to_plain_dict(train_cfg), prefix="training")
+                tracker.log_params(train_mask, prefix="training.train_mask")
+                tracker.log_params(to_plain_dict(model_cfg), prefix=f"models.{model_name}")
+                tracker.log_params({"n_features": n_features, "block_size": int(exp.block_size), "windows": str(windows_path)}, prefix="runtime")
 
                 fit_stats = model.fit(
-                    dataset_train,
-                    validation_data=dataset_val,
+                    train_set,
+                    validation_data=val_set,
                     epochs=int(train_cfg.epochs),
                     batch_size=int(train_cfg.batch_size),
                     initial_lr=float(train_cfg.lr),
@@ -224,30 +163,23 @@ def run(cfg: DictConfig) -> None:
                     min_delta=float(train_cfg.min_delta),
                 )
 
-                out_model_station = models_dir / model_type / station
-                out_model_station.mkdir(parents=True, exist_ok=True)
-                model_path = out_model_station / checkpoint_name
-                model_id = f"{model_name}-{station}-seed-{run_seed}"
+                out_dir = models_dir / model_type / station
+                out_dir.mkdir(parents=True, exist_ok=True)
+                model_path = out_dir / str(checkpoint_name)
                 torch.save(
                     {
                         "state_dict": model.state_dict(),
                         "config_dict": config_to_dict(model_config),
                         "features": features,
-                        "station": station,
-                        "model_name": model_name,
-                        "model_id": model_id,
-                        "seed": run_seed,
-                        "train_run_name": run_name,
-                        "train_run_id": run_id,
                         "model_type": model_type,
+                        "seed": seed,
                     },
                     model_path,
                 )
                 tracker.log_artifact(model_path, artifact_path="model/files")
-                tracker.set_tags({"model_id": model_id, "checkpoint_path": str(model_path), "train_run_id": run_id})
-
                 best_loss = fit_stats.get("best_loss") if isinstance(fit_stats, dict) else None
                 tracker.log_metrics({"train.loss.best": best_loss})
+                tracker.set_tags({"checkpoint_path": str(model_path)})
                 print(f"[train] Saved model: {model_path}")
 
 
