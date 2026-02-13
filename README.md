@@ -28,9 +28,19 @@ Glavni bloki:
 
 - `experiment`
 - `training`
+- `evaluation`
 - `models`
 - `paths`
 - `tracking`
+
+Priporocena delitev odgovornosti:
+
+- `experiment`: dataset/model setup (`stations`, `models`, `features`, `seed`, windowing)
+- `training.train_mask`: per-model train-time masking (`training.train_mask.transformer`, `training.train_mask.saits`)
+- `training.shared_validation_mask`: skupno maskiranje za pripravo validacijskega seta (`X_val_masked`) za vse modele
+- `evaluation`: maskiranje za test/eval + opcijski `model_ids`
+
+Opomba: SAITS trenutno podpira samo `training.train_mask.saits.mode: random` (MCAR).
 
 ## Uporaba
 
@@ -49,7 +59,7 @@ dvc repro
 ### 3) Eksperimenti
 
 ```bash
-dvc exp run -S configs/pipeline/params.yaml:training.lr=0.0005 -S configs/pipeline/params.yaml:experiment.missing_rate=0.25
+dvc exp run -S configs/pipeline/params.yaml:training.lr=0.0005 -S configs/pipeline/params.yaml:evaluation.missing_rate=0.25
 dvc exp show
 ```
 
@@ -85,6 +95,20 @@ Train run naming:
 Eval run naming:
 
 - `eval/<model>/<station>/seed-<seed>`
+
+Eval logira `evaluation.*` nastavitve posebej, train run pa ne logira eval maskiranja.
+
+Za izbor checkpointa po ID v eval lahko nastaviš:
+
+```yaml
+evaluation:
+  model_ids:
+    transformer: transformer-all_stations-seed-2189050817
+    saits:
+      all_stations: saits-all_stations-seed-2789381912
+```
+
+Pri treningu se samodejno gradi `artifacts/models/model_index.json`, iz katerega eval poišče model po ID.
 
 Logirane metrike:
 

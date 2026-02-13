@@ -23,6 +23,15 @@ from air_quality_imputer.training.model_registry import build_model_from_checkpo
 
 
 SUPPORTED_MODELS = {"transformer", "saits"}
+EVAL_SETTING_KEYS = (
+    "missing_rate",
+    "mask_mode",
+    "block_min_len",
+    "block_max_len",
+    "block_missing_prob",
+    "feature_block_prob",
+    "block_no_overlap",
+)
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float]:
@@ -161,11 +170,88 @@ def save_eval_plots(summary_overall_df: pd.DataFrame, summary_feature_df: pd.Dat
     return created_paths
 
 
+def _eval_settings_from_cfg(eval_cfg: dict[str, Any]) -> dict[str, Any]:
+    missing = [key for key in EVAL_SETTING_KEYS if key not in eval_cfg]
+    if missing:
+        raise KeyError(f"Missing evaluation settings: {missing}. Set them under evaluation.* in params.")
+    return {key: eval_cfg[key] for key in EVAL_SETTING_KEYS}
+
+
+def _load_model_index(models_dir: Path) -> dict[str, dict[str, Any]]:
+    index_path = models_dir / "model_index.json"
+    if not index_path.exists():
+        return {}
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return {}
+    by_id: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model_id = str(entry.get("model_id", "")).strip()
+        if model_id:
+            by_id[model_id] = entry
+    return by_id
+
+
+def _requested_model_id(eval_cfg: dict[str, Any], model_name: str, station: str) -> str | None:
+    model_ids = eval_cfg.get("model_ids")
+    if not isinstance(model_ids, dict):
+        return None
+    value = model_ids.get(model_name)
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        station_id = value.get(station)
+        if isinstance(station_id, str):
+            return station_id.strip() or None
+    return None
+
+
+def _resolve_model_source(
+    *,
+    models_dir: Path,
+    model_name: str,
+    model_type: str,
+    station: str,
+    checkpoint_name: str,
+    eval_cfg: dict[str, Any],
+    model_index: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    selected_model_id = _requested_model_id(eval_cfg, model_name=model_name, station=station)
+    if not selected_model_id:
+        return {
+            "model_id": None,
+            "model_path": models_dir / model_type / station / checkpoint_name,
+            "train_run_id": None,
+            "train_run_name": None,
+        }
+    if selected_model_id not in model_index:
+        raise KeyError(
+            f"Model id {selected_model_id!r} not found in {models_dir / 'model_index.json'}. "
+            "Run train first or use a valid evaluation.model_ids entry."
+        )
+    entry = model_index[selected_model_id]
+    model_path = Path(str(entry.get("checkpoint_path", "")))
+    if not model_path.is_absolute():
+        model_path = Path.cwd() / model_path
+    if not model_path.exists():
+        raise FileNotFoundError(f"Checkpoint for model id {selected_model_id!r} is missing: {model_path}")
+    return {
+        "model_id": selected_model_id,
+        "model_path": model_path,
+        "train_run_id": entry.get("train_run_id"),
+        "train_run_name": entry.get("train_run_name"),
+    }
+
+
 def evaluate_station(
     station: str,
-    model_type: str,
-    checkpoint_name: str,
-    models_dir: Path,
+    model_path: Path,
     processed_dir: Path,
     missing_rate: float,
     seed: int,
@@ -178,7 +264,6 @@ def evaluate_station(
     never_mask_features: list[str] | None,
     device: torch.device,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    model_path = models_dir / model_type / station / checkpoint_name
     windows_path = processed_dir / station / "windows.npz"
 
     if not model_path.exists():
@@ -311,20 +396,21 @@ def run(cfg: DictConfig) -> None:
     if unsupported:
         raise ValueError(f"Unsupported models for V1 pipeline: {unsupported}")
 
-    missing_rate = float(exp.missing_rate)
+    eval_cfg = to_plain_dict(cfg.get("evaluation"))
+    eval_settings = _eval_settings_from_cfg(eval_cfg)
+    missing_rate = float(eval_settings["missing_rate"])
     base_seed = int(exp.seed)
-    mask_mode = str(exp.mask_mode)
-    block_min_len = int(exp.block_min_len)
-    block_max_len = int(exp.block_max_len)
-    block_missing_prob_raw = exp.block_missing_prob
+    mask_mode = str(eval_settings["mask_mode"])
+    block_min_len = int(eval_settings["block_min_len"])
+    block_max_len = int(eval_settings["block_max_len"])
+    block_missing_prob_raw = eval_settings["block_missing_prob"]
     block_missing_prob = None if block_missing_prob_raw is None else float(block_missing_prob_raw)
-    feature_block_prob = float(exp.feature_block_prob)
-    block_no_overlap = bool(exp.block_no_overlap)
+    feature_block_prob = float(eval_settings["feature_block_prob"])
+    block_no_overlap = bool(eval_settings["block_no_overlap"])
     never_mask_features = list(exp.never_mask_features)
 
     tracker = MLflowTracker(to_plain_dict(cfg.get("tracking")))
-    experiment_params = to_plain_dict(exp)
-
+    model_index = _load_model_index(models_dir)
     per_model_overall: dict[str, pd.DataFrame] = {}
     per_model_feature: dict[str, pd.DataFrame] = {}
 
@@ -341,12 +427,19 @@ def run(cfg: DictConfig) -> None:
         per_feature_rows: list[dict[str, Any]] = []
 
         for station in stations:
+            model_source = _resolve_model_source(
+                models_dir=models_dir,
+                model_name=model_name,
+                model_type=model_type,
+                station=station,
+                checkpoint_name=checkpoint_name,
+                eval_cfg=eval_cfg,
+                model_index=model_index,
+            )
             run_seed = derive_seed(base_seed, station=station, model_name="eval")
             overall_row, feature_rows = evaluate_station(
                 station=station,
-                model_type=model_type,
-                checkpoint_name=checkpoint_name,
-                models_dir=models_dir,
+                model_path=Path(model_source["model_path"]),
                 processed_dir=processed_dir,
                 missing_rate=missing_rate,
                 seed=run_seed,
@@ -377,6 +470,10 @@ def run(cfg: DictConfig) -> None:
                 "seed": run_seed,
                 "mask_mode": mask_mode,
             }
+            if model_source["model_id"] is not None:
+                tags["model_id"] = str(model_source["model_id"])
+            if model_source["train_run_id"] is not None:
+                tags["train_run_id"] = str(model_source["train_run_id"])
             feature_metrics = _feature_metrics(feature_rows)
 
             with tracker.start_run(run_name=run_name, tags=tags):
@@ -389,10 +486,20 @@ def run(cfg: DictConfig) -> None:
                         "station": station,
                         "model": model_name,
                         "mask_mode": mask_mode,
+                        "model_id": model_source["model_id"],
                     },
                 )
-                tracker.log_params(experiment_params, prefix="experiment")
+                tracker.log_params(eval_cfg, prefix="evaluation")
                 tracker.log_params(model_params, prefix=f"models.{model_name}")
+                tracker.log_params(
+                    {
+                        "checkpoint_path": str(model_source["model_path"]),
+                        "model_id": model_source["model_id"],
+                        "train_run_name": model_source["train_run_name"],
+                        "train_run_id": model_source["train_run_id"],
+                    },
+                    prefix="model_source",
+                )
                 tracker.log_metrics(
                     {
                         "eval.mae": overall_row["mae"],

@@ -10,6 +10,7 @@ stages:
     params:
       - configs/pipeline/params.yaml:
           - experiment
+          - training.shared_validation_mask
           - paths.data_dir
           - paths.processed_dir
           - paths.scalers_dir
@@ -54,6 +55,7 @@ stages:
     params:
       - configs/pipeline/params.yaml:
           - experiment
+          - evaluation
           - models
           - paths.reports_dir
           - paths.plots_dir

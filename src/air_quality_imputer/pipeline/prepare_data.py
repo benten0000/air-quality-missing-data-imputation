@@ -11,6 +11,8 @@ from air_quality_imputer.training.data_utils import prepare_station_datasets
 
 def run(cfg: DictConfig) -> None:
     exp = cfg.experiment
+    training_cfg = cfg.training
+    val_mask_cfg = training_cfg.shared_validation_mask
     data_dir = Path(cfg.paths.data_dir)
     processed_dir = Path(cfg.paths.processed_dir)
     scalers_dir = Path(cfg.paths.scalers_dir)
@@ -19,7 +21,7 @@ def run(cfg: DictConfig) -> None:
     never_mask_set = set(exp.never_mask_features)
     never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in never_mask_set]
 
-    block_missing_prob_raw = exp.block_missing_prob
+    block_missing_prob_raw = val_mask_cfg.block_missing_prob
     block_missing_prob = None if block_missing_prob_raw is None else float(block_missing_prob_raw)
     stations = list(exp.stations)
 
@@ -33,14 +35,14 @@ def run(cfg: DictConfig) -> None:
             features=features,
             block_size=int(exp.block_size),
             step_size=int(exp.step_size),
-            missing_rate=float(exp.missing_rate),
+            missing_rate=float(val_mask_cfg.missing_rate),
             seed=int(exp.seed),
-            mask_mode=str(exp.mask_mode),
-            block_min_len=int(exp.block_min_len),
-            block_max_len=int(exp.block_max_len),
+            mask_mode=str(val_mask_cfg.mask_mode),
+            block_min_len=int(val_mask_cfg.block_min_len),
+            block_max_len=int(val_mask_cfg.block_max_len),
             block_missing_prob=block_missing_prob,
-            feature_block_prob=float(exp.feature_block_prob),
-            block_no_overlap=bool(exp.block_no_overlap),
+            feature_block_prob=float(val_mask_cfg.feature_block_prob),
+            block_no_overlap=bool(val_mask_cfg.block_no_overlap),
             never_mask_feature_indices=never_mask_feature_indices,
         )
         manifest_rows.append(
@@ -63,6 +65,7 @@ def run(cfg: DictConfig) -> None:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_payload = {
         "params": to_plain_dict(cfg.experiment),
+        "shared_validation_mask": to_plain_dict(val_mask_cfg),
         "stations": manifest_rows,
     }
     manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")

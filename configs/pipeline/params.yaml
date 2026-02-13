@@ -5,14 +5,7 @@ experiment:
   never_mask_features: []
   block_size: 24
   step_size: 1
-  missing_rate: 0.2
   seed: 42
-  mask_mode: block
-  block_min_len: 2
-  block_max_len: 14
-  block_missing_prob: 0.35
-  feature_block_prob: 0.6
-  block_no_overlap: true
 
 training:
   epochs: 100
@@ -20,6 +13,36 @@ training:
   lr: 0.0008
   patience: 20
   min_delta: 0.0001
+  train_mask:
+    transformer:
+      mode: random
+      missing_rate: 0.2
+      block_min_len: 2
+      block_max_len: 14
+      block_missing_prob: 0.35
+      feature_block_prob: 0.6
+      block_no_overlap: true
+    saits:
+      mode: random
+      missing_rate: 0.2
+  shared_validation_mask:
+    missing_rate: 0.2
+    mask_mode: random
+    block_min_len: 2
+    block_max_len: 14
+    block_missing_prob: 0.35
+    feature_block_prob: 0.6
+    block_no_overlap: true
+
+evaluation:
+  missing_rate: 0.2
+  mask_mode: random
+  block_min_len: 2
+  block_max_len: 14
+  block_missing_prob: 0.35
+  feature_block_prob: 0.6
+  block_no_overlap: true
+  model_ids: {}
 
 models:
   transformer:
@@ -27,7 +50,7 @@ models:
     checkpoint_name: transformer.pt
     params:
       d_model: 128
-      n_layer: 3
+      n_layer: 4
       n_head: 4
       dropout: 0.1
       bias: true
@@ -45,20 +68,13 @@ models:
       dataloader_prefetch_factor: 4
       dataloader_persistent_workers: true
       dataloader_pin_memory: true
-      train_mask_mode: block
-      train_missing_rate: 0.2
-      train_block_min_len: 2
-      train_block_max_len: 14
-      train_block_missing_prob: 0.35
-      train_feature_block_prob: 0.6
-      train_block_no_overlap: true
   saits:
     type: saits
     checkpoint_name: saits.pt
     params:
       # Architecture
       d_model: 128
-      n_layers: 3
+      n_layers: 4
       n_head: 4
       dropout: 0.1
       attn_dropout: 0.1

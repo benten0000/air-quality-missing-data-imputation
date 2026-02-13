@@ -55,14 +55,18 @@ class PrepareDataTests(unittest.TestCase):
                         "never_mask_features": ["station"],
                         "block_size": 4,
                         "step_size": 1,
-                        "missing_rate": 0.2,
                         "seed": 42,
-                        "mask_mode": "block_feature",
-                        "block_min_len": 2,
-                        "block_max_len": 3,
-                        "block_missing_prob": 0.35,
-                        "feature_block_prob": 0.6,
-                        "block_no_overlap": True,
+                    },
+                    "training": {
+                        "shared_validation_mask": {
+                            "missing_rate": 0.2,
+                            "mask_mode": "block_feature",
+                            "block_min_len": 2,
+                            "block_max_len": 3,
+                            "block_missing_prob": 0.35,
+                            "feature_block_prob": 0.6,
+                            "block_no_overlap": True,
+                        }
                     },
                     "paths": {
                         "data_dir": str(raw_dir),
