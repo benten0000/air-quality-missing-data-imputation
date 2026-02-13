@@ -6,6 +6,7 @@ from pathlib import Path
 from omegaconf import DictConfig
 
 from air_quality_imputer.pipeline.common import build_parser, load_params, to_plain_dict
+from air_quality_imputer.pipeline.dataset_adapters import prepare_dataset_inputs
 from air_quality_imputer.training.data_utils import prepare_station_datasets
 
 
@@ -13,17 +14,21 @@ def run(cfg: DictConfig) -> None:
     exp = cfg.experiment
     training_cfg = cfg.training
     val_mask_cfg = training_cfg.shared_validation_mask
-    data_dir = Path(cfg.paths.data_dir)
     processed_dir = Path(cfg.paths.processed_dir)
     scalers_dir = Path(cfg.paths.scalers_dir)
+    stations = list(exp.stations)
 
-    features = list(exp.features)
+    requested_features = list(exp.features)
+    data_dir, dataset_info, features = prepare_dataset_inputs(
+        cfg=cfg,
+        stations=stations,
+        requested_features=requested_features,
+    )
     never_mask_set = set(exp.never_mask_features)
     never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in never_mask_set]
 
     block_missing_prob_raw = val_mask_cfg.block_missing_prob
     block_missing_prob = None if block_missing_prob_raw is None else float(block_missing_prob_raw)
-    stations = list(exp.stations)
 
     manifest_rows: list[dict[str, object]] = []
     for station in stations:
@@ -64,6 +69,8 @@ def run(cfg: DictConfig) -> None:
     manifest_path = processed_dir / "prepare_manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_payload = {
+        "dataset": dataset_info,
+        "resolved_features": features,
         "params": to_plain_dict(cfg.experiment),
         "shared_validation_mask": to_plain_dict(val_mask_cfg),
         "stations": manifest_rows,

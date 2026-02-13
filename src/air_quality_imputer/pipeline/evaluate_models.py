@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -199,10 +200,18 @@ def _load_model_index(models_dir: Path) -> dict[str, dict[str, Any]]:
 
 
 def _requested_model_id(eval_cfg: dict[str, Any], model_name: str, station: str) -> str | None:
-    model_ids = eval_cfg.get("model_ids")
-    if not isinstance(model_ids, dict):
+    return _requested_model_value(eval_cfg, key="model_ids", model_name=model_name, station=station)
+
+
+def _requested_model_ref(eval_cfg: dict[str, Any], model_name: str, station: str) -> str | None:
+    return _requested_model_value(eval_cfg, key="mlflow_model_refs", model_name=model_name, station=station)
+
+
+def _requested_model_value(eval_cfg: dict[str, Any], key: str, model_name: str, station: str) -> str | None:
+    values = eval_cfg.get(key)
+    if not isinstance(values, dict):
         return None
-    value = model_ids.get(model_name)
+    value = values.get(model_name)
     if isinstance(value, str):
         return value.strip() or None
     if isinstance(value, dict):
@@ -210,6 +219,45 @@ def _requested_model_id(eval_cfg: dict[str, Any], model_name: str, station: str)
         if isinstance(station_id, str):
             return station_id.strip() or None
     return None
+
+
+def _resolve_checkpoint_from_mlflow_ref(
+    *,
+    mlflow_ref: str,
+    checkpoint_name: str,
+    tracking_cfg: dict[str, Any],
+) -> Path:
+    try:
+        artifacts_mod = importlib.import_module("mlflow.artifacts")
+    except Exception as exc:
+        raise RuntimeError("mlflow is not installed but evaluation.mlflow_model_refs is configured.") from exc
+
+    repo_owner = tracking_cfg.get("repo_owner")
+    repo_name = tracking_cfg.get("repo_name")
+    if repo_owner and repo_name:
+        try:
+            import dagshub  # pyright: ignore[reportMissingImports]
+
+            dagshub.init(repo_owner=str(repo_owner), repo_name=str(repo_name), mlflow=True)  # pyright: ignore[reportPrivateImportUsage]
+        except Exception:
+            # Tracking init failures are non-fatal here; download may still work via env-configured mlflow.
+            pass
+
+    download_artifacts = getattr(artifacts_mod, "download_artifacts", None)
+    if not callable(download_artifacts):
+        raise RuntimeError("mlflow.artifacts.download_artifacts is not available in current MLflow installation.")
+    local_path = Path(download_artifacts(artifact_uri=mlflow_ref))
+    if local_path.is_file():
+        return local_path
+    candidate = local_path / checkpoint_name
+    if candidate.exists():
+        return candidate
+    pt_files = sorted(local_path.rglob("*.pt"))
+    if pt_files:
+        return pt_files[0]
+    raise FileNotFoundError(
+        f"MLflow ref {mlflow_ref!r} resolved to {local_path}, but no checkpoint file (*.pt) was found."
+    )
 
 
 def _resolve_model_source(
@@ -221,11 +269,30 @@ def _resolve_model_source(
     checkpoint_name: str,
     eval_cfg: dict[str, Any],
     model_index: dict[str, dict[str, Any]],
+    tracking_cfg: dict[str, Any],
 ) -> dict[str, Any]:
+    mlflow_ref = _requested_model_ref(eval_cfg, model_name=model_name, station=station)
+    if mlflow_ref:
+        model_path = _resolve_checkpoint_from_mlflow_ref(
+            mlflow_ref=mlflow_ref,
+            checkpoint_name=checkpoint_name,
+            tracking_cfg=tracking_cfg,
+        )
+        return {
+            "source": "mlflow_ref",
+            "model_id": None,
+            "mlflow_ref": mlflow_ref,
+            "model_path": model_path,
+            "train_run_id": None,
+            "train_run_name": None,
+        }
+
     selected_model_id = _requested_model_id(eval_cfg, model_name=model_name, station=station)
     if not selected_model_id:
         return {
+            "source": "default",
             "model_id": None,
+            "mlflow_ref": None,
             "model_path": models_dir / model_type / station / checkpoint_name,
             "train_run_id": None,
             "train_run_name": None,
@@ -242,7 +309,9 @@ def _resolve_model_source(
     if not model_path.exists():
         raise FileNotFoundError(f"Checkpoint for model id {selected_model_id!r} is missing: {model_path}")
     return {
+        "source": "model_id",
         "model_id": selected_model_id,
+        "mlflow_ref": None,
         "model_path": model_path,
         "train_run_id": entry.get("train_run_id"),
         "train_run_name": entry.get("train_run_name"),
@@ -409,7 +478,9 @@ def run(cfg: DictConfig) -> None:
     block_no_overlap = bool(eval_settings["block_no_overlap"])
     never_mask_features = list(exp.never_mask_features)
 
-    tracker = MLflowTracker(to_plain_dict(cfg.get("tracking")))
+    tracking_cfg = to_plain_dict(cfg.get("tracking"))
+    tracking_cfg["dataset_name"] = str(exp.get("dataset", "air_quality"))
+    tracker = MLflowTracker(tracking_cfg)
     model_index = _load_model_index(models_dir)
     per_model_overall: dict[str, pd.DataFrame] = {}
     per_model_feature: dict[str, pd.DataFrame] = {}
@@ -435,6 +506,7 @@ def run(cfg: DictConfig) -> None:
                 checkpoint_name=checkpoint_name,
                 eval_cfg=eval_cfg,
                 model_index=model_index,
+                tracking_cfg=tracking_cfg,
             )
             run_seed = derive_seed(base_seed, station=station, model_name="eval")
             overall_row, feature_rows = evaluate_station(
@@ -469,6 +541,7 @@ def run(cfg: DictConfig) -> None:
                 "station": station,
                 "seed": run_seed,
                 "mask_mode": mask_mode,
+                "model_source": str(model_source["source"]),
             }
             if model_source["model_id"] is not None:
                 tags["model_id"] = str(model_source["model_id"])
@@ -487,6 +560,7 @@ def run(cfg: DictConfig) -> None:
                         "model": model_name,
                         "mask_mode": mask_mode,
                         "model_id": model_source["model_id"],
+                        "model_source": model_source["source"],
                     },
                 )
                 tracker.log_params(eval_cfg, prefix="evaluation")
@@ -495,6 +569,8 @@ def run(cfg: DictConfig) -> None:
                     {
                         "checkpoint_path": str(model_source["model_path"]),
                         "model_id": model_source["model_id"],
+                        "mlflow_ref": model_source["mlflow_ref"],
+                        "source": model_source["source"],
                         "train_run_name": model_source["train_run_name"],
                         "train_run_id": model_source["train_run_id"],
                     },

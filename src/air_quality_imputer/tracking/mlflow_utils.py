@@ -65,6 +65,13 @@ def _slug(value: str) -> str:
     return slug or "model"
 
 
+def _dataset_experiment_name(dataset_name: str) -> str:
+    dataset_slug = _slug(dataset_name)
+    if dataset_slug in {"air", "air-quality", "air-quality-imputer", "air-quality-imputation", "air-quality-csv", "airquality"}:
+        return "air-quality-imputer"
+    return f"{dataset_slug}-quality-imputer"
+
+
 class MLflowTracker:
     """Small wrapper over MLflow with safe no-op fallback."""
 
@@ -88,12 +95,16 @@ class MLflowTracker:
         mlflow = self._client()
         self._init_dagshub(cfg)
         try:
-            mlflow.set_experiment(str(cfg.get("experiment_name", "air-quality-imputer")))
+            dataset_name = str(cfg.get("dataset_name", "air_quality")).strip()
+            experiment_name = _dataset_experiment_name(dataset_name)
+            mlflow.set_experiment(experiment_name)
         except Exception as exc:
             print(f"[WARN] MLflow init failed, disabling tracking: {exc}")
             self.enabled = False
 
     def _init_dagshub(self, cfg: Mapping[str, Any]) -> None:
+        if _dagshub is None:
+            raise RuntimeError("dagshub package is not installed.")
         repo_owner = cfg.get("repo_owner") or os.getenv("DAGSHUB_REPO_OWNER")
         repo_name = cfg.get("repo_name") or os.getenv("DAGSHUB_REPO_NAME")
         if not repo_owner or not repo_name:

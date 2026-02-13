@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import torch
 from omegaconf import OmegaConf
 
 from air_quality_imputer.pipeline.train_models import run
@@ -103,6 +104,74 @@ class TrainModelsTests(unittest.TestCase):
             payload = json.loads(model_index_path.read_text(encoding="utf-8"))
             entries = payload.get("entries", [])
             self.assertTrue(any(str(entry.get("model_name")) == "transformer" for entry in entries))
+
+    def test_train_stage_uses_manifest_features_when_config_empty(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            station = "electricity"
+            processed_root = root / "data" / "processed" / "splits"
+            station_dir = processed_root / station
+            station_dir.mkdir(parents=True, exist_ok=True)
+            (processed_root / "prepare_manifest.json").write_text(
+                json.dumps({"resolved_features": ["MT_001", "MT_002", "MT_003"]}),
+                encoding="utf-8",
+            )
+
+            np.savez_compressed(
+                station_dir / "windows.npz",
+                X_train=np.zeros((2, 4, 3), dtype=np.float32),
+                X_val_masked=np.zeros((1, 4, 3), dtype=np.float32),
+                X_val_ori=np.zeros((1, 4, 3), dtype=np.float32),
+                X_test_ori=np.zeros((1, 4, 3), dtype=np.float32),
+                S_train=np.zeros((2,), dtype=np.int64),
+                S_val=np.zeros((1,), dtype=np.int64),
+                S_test=np.zeros((1,), dtype=np.int64),
+                station_names=np.array(["A"], dtype=str),
+            )
+
+            cfg = OmegaConf.create(
+                {
+                    "experiment": {
+                        "seed": 42,
+                        "stations": [station],
+                        "models": ["transformer"],
+                        "features": [],
+                        "never_mask_features": [],
+                        "block_size": 4,
+                    },
+                    "training": {
+                        "epochs": 1,
+                        "batch_size": 2,
+                        "lr": 0.001,
+                        "patience": 1,
+                        "min_delta": 0.0,
+                        "train_mask": {
+                            "transformer": {"mode": "random", "missing_rate": 0.15},
+                        },
+                    },
+                    "paths": {
+                        "processed_dir": str(processed_root),
+                        "models_dir": str(root / "artifacts" / "models"),
+                    },
+                    "tracking": {"enabled": False},
+                    "models": {
+                        "transformer": {
+                            "type": "classic_transformer",
+                            "checkpoint_name": "transformer.pt",
+                            "params": {},
+                        }
+                    },
+                }
+            )
+
+            with patch("air_quality_imputer.pipeline.train_models.build_model_from_cfg") as build_model:
+                build_model.return_value = (_DummyModel(), {"x": 1}, "classic_transformer", "transformer.pt")
+                with patch("air_quality_imputer.pipeline.train_models.config_to_dict", return_value={"x": 1}):
+                    run(cfg)
+
+            checkpoint = root / "artifacts" / "models" / "classic_transformer" / station / "transformer.pt"
+            payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+            self.assertEqual(payload["features"], ["MT_001", "MT_002", "MT_003"])
 
     def test_saits_rejects_block_train_mask_mode(self):
         with tempfile.TemporaryDirectory() as td:

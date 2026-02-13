@@ -77,9 +77,49 @@ dvc metrics show
 dvc plots show
 ```
 
+### 6) Dataset switch v enem `params.yaml`
+
+Dataset se zdaj izbira v YAML preko `experiment.dataset`.
+`prepare_data` za loader `npz` najprej poišče/ustvari NPZ in ga potem materializira v enoten CSV vhod za preostali pipeline.
+
+Skupna struktura map:
+
+- `data/datasets/<dataset>/npz/`
+- `data/datasets/<dataset>/materialized/`
+- `data/datasets/<dataset>/cache/`
+- `data/datasets/<dataset>/raw/` (opcijsko, če želiš tudi CSV izvoz)
+
+Primer za Electricity NPZ (opcijsko, ker ga `prepare_data` lahko tudi sam ustvari iz `dataset.definitions.<name>.ensure`):
+
+```bash
+aqi-download-electricity --output-npz data/datasets/electricity/npz/electricity.npz --skip-csv --n-clients 16 --resample-frequency 1h
+```
+
+Potem zaženi isti `params.yaml` z override-i:
+
+```bash
+dvc exp run \
+  -S configs/pipeline/params.yaml:experiment.dataset=electricity \
+  -S configs/pipeline/params.yaml:experiment.stations='[electricity]' \
+  -S configs/pipeline/params.yaml:experiment.models='[transformer]' \
+  -S configs/pipeline/params.yaml:tracking.enabled=false
+```
+
+Ali pa direktno v `configs/pipeline/params.yaml` spremeni:
+
+```yaml
+experiment:
+  dataset: electricity # ali air_quality / physionet2012 / ett
+```
+
 ## MLflow / DagsHub
 
 `tracking` konfiguracija je v `configs/pipeline/params.yaml`.
+
+Ime MLflow eksperimenta se nastavi avtomatsko iz `experiment.dataset`:
+
+- `air` / `air_quality` -> `air-quality-imputer`
+- ostalo -> `<dataset>-quality-imputer` (npr. `electricity-quality-imputer`)
 
 MLflow tracking je nastavljen na DagsHub-only način:
 
@@ -106,9 +146,14 @@ evaluation:
     transformer: transformer-all_stations-seed-2189050817
     saits:
       all_stations: saits-all_stations-seed-2789381912
+  mlflow_model_refs:
+    transformer: null
+    saits: null
 ```
 
 Pri treningu se samodejno gradi `artifacts/models/model_index.json`, iz katerega eval poišče model po ID.
+Ce je nastavljen `evaluation.mlflow_model_refs`, ima prednost pred `model_ids` in eval checkpoint prenese direktno iz MLflow.
+Privzeto sta `evaluation.model_ids.transformer` in `evaluation.model_ids.saits` nastavljena na `null`.
 
 Logirane metrike:
 
@@ -153,3 +198,4 @@ Generirani artefakti:
 - `aqi-prepare`
 - `aqi-train-models`
 - `aqi-evaluate-models`
+- `aqi-download-electricity`

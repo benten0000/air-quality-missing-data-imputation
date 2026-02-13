@@ -1,7 +1,8 @@
 experiment:
-  stations: [all_stations]
+  dataset: electricity
+  stations: [electricity]
   models: [transformer, saits]
-  features: [PM10, PM2.5, temperature, rain, pressure, precipitation, wind_speed, clouds, wind_direction]
+  features: []
   never_mask_features: []
   block_size: 24
   step_size: 1
@@ -42,7 +43,15 @@ evaluation:
   block_missing_prob: 0.35
   feature_block_prob: 0.6
   block_no_overlap: true
-  model_ids: {}
+  model_ids:
+    transformer: null
+    saits: null
+  evaluation:
+    mlflow_model_refs:
+      transformer: null
+      saits: null
+
+# "runs:/172d03a272524741b1cf6a2f4d3ea4fc/model/files/saits.pt"
 
 models:
   transformer:
@@ -110,6 +119,41 @@ paths:
   reports_dir: reports/model_eval
   plots_dir: reports/plots/model_eval
   metrics_dir: reports/metrics
+
+dataset:
+  definitions:
+    air_quality:
+      loader: air_quality_csv
+      data_dir: data/raw
+      feature_names: [PM10, PM2.5, temperature, rain, pressure, precipitation, wind_speed, clouds, wind_direction]
+    electricity:
+      loader: npz
+      npz_path: data/datasets/electricity/npz/electricity.npz
+      data_dir: data/datasets/electricity/materialized
+      feature_names: [MT_001, MT_002, MT_003, MT_004, MT_005, MT_006, MT_007, MT_008, MT_009, MT_010, MT_011, MT_012, MT_013, MT_014, MT_015, MT_016]
+      value_key: X
+      datetime_key: datetime
+      feature_names_key: feature_names
+      ensure:
+        kind: electricity_uci
+        cache_dir: data/datasets/electricity/cache
+        start_client: 1
+        n_clients: 16
+        resample_frequency: 1h
+    physionet2012:
+      loader: npz
+      npz_path: data/datasets/physionet2012/npz/physionet2012.npz
+      data_dir: data/datasets/physionet2012/materialized
+      value_key: X
+      datetime_key: datetime
+      feature_names_key: feature_names
+    ett:
+      loader: npz
+      npz_path: data/datasets/ett/npz/ett.npz
+      data_dir: data/datasets/ett/materialized
+      value_key: X
+      datetime_key: datetime
+      feature_names_key: feature_names
 
 tracking:
   enabled: true

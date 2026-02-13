@@ -79,6 +79,23 @@ class MLflowTrackerTests(unittest.TestCase):
         self.assertNotIn("m2", dummy.metrics)
         self.assertIn("stage", dummy.tags)
 
+    def test_experiment_name_is_derived_from_dataset(self):
+        dummy = _DummyMlflow()
+        dagshub_dummy = _DummyDagsHub()
+        with patch("air_quality_imputer.tracking.mlflow_utils._mlflow", dummy), patch(
+            "air_quality_imputer.tracking.mlflow_utils._dagshub", dagshub_dummy
+        ):
+            MLflowTracker(
+                {
+                    "enabled": True,
+                    "repo_owner": "o",
+                    "repo_name": "r",
+                    "dataset_name": "electricity",
+                    "experiment_name": "ignored-manual-name",
+                }
+            )
+        self.assertEqual(dummy.experiment_name, "electricity-quality-imputer")
+
 
 if __name__ == "__main__":
     unittest.main()

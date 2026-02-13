@@ -20,6 +20,12 @@ mlruns/
 # Artifacts and experiment outputs
 artifacts/
 data/processed/
+data/datasets/
+data/benchmark_materialized/
+data/benchmark_npz/
+data/benchmark_processed/
+data/benchmark_raw/
+data/external_cache/
 reports/model_eval/
 reports/plots/model_eval/
 logs/*

@@ -65,6 +65,37 @@ def _upsert_model_index(models_dir: Path, entry: dict[str, Any]) -> None:
     index_path.write_text(json.dumps(index_payload, indent=2), encoding="utf-8")
 
 
+def _features_from_manifest(processed_dir: Path) -> list[str]:
+    manifest_path = processed_dir / "prepare_manifest.json"
+    if not manifest_path.exists():
+        return []
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    values = payload.get("resolved_features") if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return []
+    features = [str(item).strip() for item in values if str(item).strip()]
+    return features
+
+
+def _resolve_training_features(exp: DictConfig, processed_dir: Path, stations: list[str]) -> list[str]:
+    configured = [str(item).strip() for item in list(exp.features) if str(item).strip()]
+    if configured:
+        return configured
+    from_manifest = _features_from_manifest(processed_dir)
+    if from_manifest:
+        return from_manifest
+    if not stations:
+        raise ValueError("No stations configured and no features available in manifest.")
+    sample = _load_windows(processed_dir=processed_dir, station=stations[0])
+    width = int(sample["X_train"].shape[2]) if sample["X_train"].ndim == 3 else 0
+    if width <= 0:
+        raise ValueError("Unable to infer features from prepared windows.")
+    return [f"feature_{idx + 1:03d}" for idx in range(width)]
+
+
 def _apply_transformer_train_mask(model_cfg: DictConfig, train_mask_cfg: dict[str, Any]) -> DictConfig:
     if str(model_cfg.type) != "classic_transformer" or not train_mask_cfg:
         return model_cfg
@@ -132,24 +163,32 @@ def run(cfg: DictConfig) -> None:
     processed_dir = Path(cfg.paths.processed_dir)
     models_dir = Path(cfg.paths.models_dir)
 
-    features = list(exp.features)
-    n_features = len(features)
     block_size = int(exp.block_size)
+    stations = list(exp.stations)
+    features = _resolve_training_features(exp, processed_dir=processed_dir, stations=stations)
+    n_features = len(features)
     never_mask_features = set(exp.never_mask_features)
     never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in never_mask_features]
-
-    stations = list(exp.stations)
     model_names = list(exp.models)
     unsupported = sorted(set(model_names) - SUPPORTED_MODELS)
     if unsupported:
         raise ValueError(f"Unsupported models for V1 pipeline: {unsupported}")
 
-    tracker = MLflowTracker(to_plain_dict(cfg.get("tracking")))
+    tracking_cfg = to_plain_dict(cfg.get("tracking"))
+    tracking_cfg["dataset_name"] = str(exp.get("dataset", "air_quality"))
+    tracker = MLflowTracker(tracking_cfg)
     experiment_params = to_plain_dict(exp)
+    experiment_params["resolved_features"] = features
     training_params = _training_common_params(train_cfg)
 
     for station in stations:
         prepared = _load_windows(processed_dir=processed_dir, station=station)
+        station_n_features = int(prepared["X_train"].shape[2]) if prepared["X_train"].ndim == 3 else 0
+        if station_n_features != n_features:
+            raise ValueError(
+                f"Feature mismatch for station {station}: prepared windows have {station_n_features} "
+                f"features, but resolved feature list has {n_features}."
+            )
         dataset_train: dict[str, Any] = {
             "X": prepared["X_train"],
             "station_ids": prepared["S_train"],
