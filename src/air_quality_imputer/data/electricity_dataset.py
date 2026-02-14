@@ -4,6 +4,7 @@ import shutil
 import urllib.request
 import zipfile
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -77,25 +78,28 @@ def _load_electricity_frame(
     chosen = _choose_clients(header_cols, clients, start_client, n_clients)
     first_col = header_cols[0]
 
-    df = pd.read_csv(
-        raw_txt_path,
-        sep=";",
-        decimal=",",
-        usecols=[first_col, *chosen],
-        low_memory=False,
-    ).rename(columns={first_col: "datetime"})
+    df: pd.DataFrame = cast(
+        pd.DataFrame,
+        pd.read_csv(
+            raw_txt_path,
+            sep=";",
+            decimal=",",
+            usecols=[first_col, *chosen],
+            low_memory=False,
+        ).rename(columns={first_col: "datetime"}),
+    )
     df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
-    df = df.dropna(subset=["datetime"]).sort_values("datetime")
+    df = cast(pd.DataFrame, df.dropna(subset=["datetime"]).sort_values("datetime"))
     df[chosen] = df[chosen].apply(pd.to_numeric, errors="coerce")
 
     if resample_frequency:
         print(f"[electricity] Resampling to {resample_frequency}")
         df = df.set_index("datetime").resample(resample_frequency).mean().reset_index()
 
-    df = df.dropna(subset=chosen, how="all")
+    df = cast(pd.DataFrame, df.dropna(subset=chosen, how="all"))
     if max_rows is not None and max_rows > 0 and len(df) > max_rows:
-        df = df.iloc[:max_rows].copy()
-    return df, chosen, zip_path, raw_txt_path
+        df = cast(pd.DataFrame, df.iloc[:max_rows].copy())
+    return cast(pd.DataFrame, df), chosen, zip_path, raw_txt_path
 
 
 def _write_metadata(
@@ -184,10 +188,11 @@ def prepare_electricity_npz(
     )
     output_npz.parent.mkdir(parents=True, exist_ok=True)
     dt = pd.to_datetime(df["datetime"], errors="coerce")
+    dt_str = pd.DatetimeIndex(dt).strftime("%Y-%m-%d %H:%M:%S").to_numpy(dtype=str)
     np.savez_compressed(
         output_npz,
         X=df[chosen].to_numpy(dtype=np.float32, copy=False),
-        datetime=dt.dt.strftime("%Y-%m-%d %H:%M:%S").to_numpy(dtype=str),
+        datetime=dt_str,
         feature_names=np.asarray(chosen, dtype=str),
     )
     meta_path = _write_metadata(

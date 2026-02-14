@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Hashable, cast
 
 import numpy as np
 import pandas as pd
@@ -163,7 +164,8 @@ def prepare_station_datasets(
 
     df = df[required_cols].copy()
     df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
-    df = df.dropna(subset=["datetime"]).sort_values("datetime")
+    datetime_subset: list[Hashable] = ["datetime"]
+    df = cast(pd.DataFrame, df.dropna(subset=datetime_subset).sort_values("datetime"))  # type: ignore[call-overload]
     if df.empty:
         raise ValueError(f"No valid rows found in {file_path}")
     df[features] = df[features].apply(pd.to_numeric, errors="coerce")

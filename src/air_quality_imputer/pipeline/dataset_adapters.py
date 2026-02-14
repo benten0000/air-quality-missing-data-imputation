@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import numpy as np
 import pandas as pd
@@ -93,9 +93,9 @@ def _materialize_combined_wide_csv(
     for station in station_names:
         path = data_dir / f"{station}.csv"
         df = pd.read_csv(path, usecols=["datetime", *base_features])
-        dt = pd.to_datetime(df["datetime"], errors="coerce")
+        dt = cast(pd.Series, pd.to_datetime(df["datetime"], errors="coerce"))
         valid = dt.notna()
-        dt = dt[valid]
+        dt = dt.loc[valid]
         values = df.loc[valid, base_features].apply(pd.to_numeric, errors="coerce")
         idx = pd.DatetimeIndex(dt)
         if ref_idx is None:

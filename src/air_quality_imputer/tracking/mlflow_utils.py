@@ -65,7 +65,10 @@ class MLflowTracker:
 
         try:
             dataset_name = str(cfg.get("dataset_name", "air_quality")).strip() or "air_quality"
-            self._mlflow.set_experiment(_experiment_name(dataset_name))
+            mlflow_inst = self._mlflow
+            if mlflow_inst is None:
+                raise RuntimeError("MLflow module is not available.")
+            mlflow_inst.set_experiment(_experiment_name(dataset_name))
         except Exception as exc:
             print(f"[WARN] MLflow init failed, tracking is disabled: {exc}")
             self.enabled = False

@@ -2,7 +2,7 @@ import importlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -127,8 +127,8 @@ def evaluate_station(
 
 
 def _wavg(values: pd.Series, weights: pd.Series) -> float:
-    v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
-    w = pd.to_numeric(weights, errors="coerce").to_numpy(dtype=float)
+    v = cast(pd.Series, pd.to_numeric(values, errors="coerce")).to_numpy(dtype=float)
+    w = cast(pd.Series, pd.to_numeric(weights, errors="coerce")).to_numpy(dtype=float)
     ok = np.isfinite(v) & np.isfinite(w) & (w > 0)
     return float(np.average(v[ok], weights=w[ok])) if ok.any() else float("nan")
 
@@ -231,7 +231,7 @@ def run(cfg: DictConfig) -> None:
 
     summary_rows: list[dict[str, Any]] = []
     for model_type, df in per_model_overall.items():
-        n_eval = int(pd.to_numeric(df["n_eval"], errors="coerce").fillna(0).sum()) if not df.empty else 0
+        n_eval = int(cast(pd.Series, pd.to_numeric(df["n_eval"], errors="coerce")).fillna(0).sum()) if not df.empty else 0
         summary_rows.append(
             {
                 "model_type": model_type,
@@ -247,9 +247,9 @@ def run(cfg: DictConfig) -> None:
 
     best = None
     if not summary_df.empty:
-        valid = summary_df[pd.to_numeric(summary_df["mae"], errors="coerce").notna()]
+        valid = summary_df[cast(pd.Series, pd.to_numeric(summary_df["mae"], errors="coerce")).notna()]
         if not valid.empty:
-            best = str(valid.sort_values("mae").iloc[0]["model_type"])
+            best = str(cast(pd.DataFrame, valid).sort_values(by=["mae"]).iloc[0]["model_type"])
     metrics_payload: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "best_model_by_mae": best,
