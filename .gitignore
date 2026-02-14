@@ -16,6 +16,7 @@ env/
 .dvc/tmp/
 .dvc/cache/
 mlruns/
+mlflow.db
 
 # Artifacts and experiment outputs
 artifacts/
