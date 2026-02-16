@@ -5,6 +5,9 @@ from typing import Any
 import numpy as np
 import torch
 
+from air_quality_imputer import exceptions
+from air_quality_imputer.logger import logger
+
 
 def _extract_imputation(output: Any) -> np.ndarray | None:
     arr_raw: Any | None = None
@@ -42,16 +45,6 @@ class _PyPOTSBase:
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         self.model = state_dict["serialized_model"]
 
-    def to(self, device: torch.device):
-        del device
-        return self
-
-    def eval(self):
-        return self
-
-    def train(self):
-        return self
-
     def impute(self, dataset: dict[str, np.ndarray]) -> np.ndarray | None:
         if self.model is None:
             return None
@@ -66,12 +59,15 @@ class SAITSConfig:
     n_layers: int = 3
     d_model: int = 128
     n_head: int = 4
+    d_k: int | None = None
+    d_v: int | None = None
     dropout: float = 0.1
     attn_dropout: float = 0.0
     diagonal_attention_mask: bool = True
     d_ffn: int | None = None
     ORT_weight: float = 1.0
     MIT_weight: float = 1.0
+    train_missing_rate: float = 0.2
     learning_rate: float | None = None
     training_loss: str = "MAE"
     validation_metric: str = "MSE"
@@ -83,6 +79,9 @@ class SAITSConfig:
     optimizer_weight_decay: float = 0.0
     optimizer_betas: list[float] | None = None
     optimizer_eps: float | None = None
+    scheduler_warmup_ratio: float | None = None
+    scheduler_warmup_start_factor: float | None = None
+    scheduler_min_lr: float | None = None
 
 
 class SAITSImputer(_PyPOTSBase):
@@ -115,9 +114,9 @@ class SAITSImputer(_PyPOTSBase):
             try:
                 from pypots.optim.adamw import AdamW
             except Exception as exc:
-                raise ValueError("optimizer=adamw is not available in current PyPOTS installation.") from exc
+                raise exceptions.ModelBuildError("optimizer=adamw is not available in current PyPOTS installation.") from exc
             return AdamW(**self._filtered_kwargs(AdamW, common_kwargs))
-        raise ValueError(f"Unsupported SAITS optimizer: {self.config.optimizer}")
+        raise exceptions.ModelBuildError(f"Unsupported SAITS optimizer: {self.config.optimizer}")
 
     @staticmethod
     def _resolve_criterion(name: str):
@@ -133,14 +132,29 @@ class SAITSImputer(_PyPOTSBase):
         }
         key = str(name).replace("-", "").replace("_", "").upper()
         if key not in allowed:
-            raise ValueError(f"Unsupported SAITS criterion: {name}. Allowed: {sorted(allowed.keys())}")
+            raise exceptions.ModelBuildError(f"Unsupported SAITS criterion: {name}. Allowed: {sorted(allowed.keys())}")
         return allowed[key]
 
     def _build_model(self, epochs: int, batch_size: int, patience: int, lr: float) -> None:
         from pypots.imputation import SAITS
 
-        d_k = self.config.d_model // self.config.n_head
-        d_v = self.config.d_model // self.config.n_head
+        if self.config.n_head <= 0:
+            raise exceptions.ModelBuildError("SAITS n_head must be > 0")
+        if self.config.d_k is None:
+            if self.config.d_model % self.config.n_head != 0:
+                raise exceptions.ModelBuildError("SAITS d_model must be divisible by n_head when d_k is not set")
+            d_k = self.config.d_model // self.config.n_head
+        else:
+            d_k = int(self.config.d_k)
+        if self.config.d_v is None:
+            if self.config.d_model % self.config.n_head != 0:
+                raise exceptions.ModelBuildError("SAITS d_model must be divisible by n_head when d_v is not set")
+            d_v = self.config.d_model // self.config.n_head
+        else:
+            d_v = int(self.config.d_v)
+        if d_k <= 0 or d_v <= 0:
+            raise exceptions.ModelBuildError("SAITS d_k and d_v must be > 0")
+
         self.model = SAITS(
             n_steps=self.config.block_size,
             n_features=self.config.n_features,
@@ -173,21 +187,44 @@ class SAITSImputer(_PyPOTSBase):
         dataset: dict[str, np.ndarray],
         epochs: int = 300,
         batch_size: int = 128,
-        initial_lr: float = 1e-3,
+        initial_lr: float | None = None,
         patience: int = 250,
         min_delta: float = 0.0,
         validation_data: dict[str, np.ndarray] | None = None,
     ) -> dict[str, float | None]:
         if min_delta != 0.0:
-            print("[INFO] SAITS backend does not expose min_delta; using patience-only early stopping.")
-        self._build_model(epochs=epochs, batch_size=batch_size, patience=patience, lr=initial_lr)
+            logger.info("[INFO] SAITS backend does not expose min_delta; using patience-only early stopping.")
+        effective_lr = float(self.config.learning_rate) if self.config.learning_rate is not None else None
+        if initial_lr is not None:
+            effective_lr = float(initial_lr)
+        if effective_lr is None:
+            effective_lr = 1e-3
+
+        self._build_model(epochs=epochs, batch_size=batch_size, patience=patience, lr=effective_lr)
         assert self.model is not None
+
         train_set = {"X": dataset["X"]}
         val_set = None
         if validation_data is not None and "X" in validation_data and "X_ori" in validation_data:
             val_set = {"X": validation_data["X"], "X_ori": validation_data["X_ori"]}
+
+        # PyPOTS SAITS uses DatasetForSAITS(rate=...) for training-time MCAR masking.
+        # The SAITS.fit() path doesn't expose rate; replicate it here with a configurable rate.
+        from torch.utils.data import DataLoader
+        from pypots.imputation.saits.data import DatasetForSAITS
+
+        rate = float(self.config.train_missing_rate)
+        rate = min(max(rate, 0.0), 1.0)
+        train_dataset = DatasetForSAITS(train_set, return_X_ori=False, return_y=False, file_type="hdf5", rate=rate)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=int(self.config.num_workers))
+
+        val_loader = None
         if val_set is not None:
-            self.model.fit(train_set, val_set)
-        else:
-            self.model.fit(train_set)
+            val_dataset = DatasetForSAITS(val_set, return_X_ori=True, return_y=False, file_type="hdf5", rate=rate)
+            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=int(self.config.num_workers))
+
+        # Train and restore best checkpoint, matching PyPOTS' SAITS.fit() behavior.
+        self.model._train_model(train_loader, val_loader)  # type: ignore[attr-defined]
+        self.model.model.load_state_dict(self.model.best_model_dict)  # type: ignore[attr-defined]
+        self.model._auto_save_model_if_necessary(confirm_saving=self.model.model_saving_strategy == "best")  # type: ignore[attr-defined]
         return {"best_loss": None, "stopped_epoch": None}

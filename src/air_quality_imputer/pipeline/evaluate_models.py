@@ -4,11 +4,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+import torch
 import numpy as np
 import pandas as pd
-import torch
 from omegaconf import DictConfig
 
+from air_quality_imputer import exceptions, logger
 from air_quality_imputer.pipeline.common import (
     build_parser,
     derive_seed,
@@ -42,10 +43,10 @@ def _resolve_checkpoint_from_mlflow_ref(*, mlflow_ref: str, checkpoint_name: str
     try:
         artifacts_mod = importlib.import_module("mlflow.artifacts")
     except Exception as exc:
-        raise RuntimeError("mlflow is not installed but evaluation.mlflow_model_refs is configured.") from exc
+        raise exceptions.TrackingError("mlflow is not installed but evaluation.mlflow_model_refs is configured.") from exc
     download_artifacts = getattr(artifacts_mod, "download_artifacts", None)
     if not callable(download_artifacts):
-        raise RuntimeError("mlflow.artifacts.download_artifacts is not available in current MLflow installation.")
+        raise exceptions.TrackingError("mlflow.artifacts.download_artifacts is not available in current MLflow installation.")
 
     downloaded = download_artifacts(artifact_uri=mlflow_ref)
     local_path = Path(str(downloaded))
@@ -89,13 +90,15 @@ def evaluate_station(
 
     model = build_model_from_checkpoint(str(ckpt["model_type"]), ckpt["config_dict"])
     model.load_state_dict(ckpt["state_dict"])
-    model.to(device)
-    model.eval()
+    if hasattr(model, "to"):
+        model.to(device)
+    if hasattr(model, "eval"):
+        model.eval()
 
     windows = np.load(windows_path)
     X_test_ori = windows["X_test_ori"].astype(np.float32)
     if int(X_test_ori.shape[2]) != len(features):
-        raise ValueError(
+        raise exceptions.ValidationError(
             f"Checkpoint features ({len(features)}) do not match dataset window features ({X_test_ori.shape[2]}). "
             f"Model={model_path}"
         )
@@ -114,11 +117,11 @@ def evaluate_station(
     )
     eval_mask = np.isnan(X_test_masked) & ~np.isnan(X_test_ori)
     if not eval_mask.any():
-        raise ValueError(f"No masked values for station {station}; increase missing_rate")
+        raise exceptions.ValidationError(f"No masked values for station {station}; increase missing_rate")
 
     X_imputed = model.impute({"X": X_test_masked})
     if X_imputed is None:
-        raise RuntimeError(f"Imputation failed for station {station}")
+        raise exceptions.TrackingError(f"Imputation failed for station {station}")
 
     err = X_imputed[eval_mask] - X_test_ori[eval_mask]
     mae = float(np.mean(np.abs(err)))
@@ -141,7 +144,7 @@ def run(cfg: DictConfig) -> None:
     model_names = list(exp.models)
     unsupported = sorted(set(model_names) - SUPPORTED_MODELS)
     if unsupported:
-        raise ValueError(f"Unsupported models for V1 pipeline: {unsupported}")
+        raise exceptions.ModelBuildError(f"Unsupported models for V1 pipeline: {unsupported}")
 
     models_dir = Path(cfg.paths.models_dir)
     processed_dir = Path(cfg.paths.processed_dir)
@@ -221,7 +224,7 @@ def run(cfg: DictConfig) -> None:
                 )
                 tracker.log_metrics({"eval.mae": row["mae"], "eval.rmse": row["rmse"], "eval.n_eval": row["n_eval"]})
 
-            print(
+            logger.logger.info(
                 f"[eval] {model_name}/{station}: MAE={row['mae']:.6f}, RMSE={row['rmse']:.6f}, n_eval={row['n_eval']}"
             )
 
@@ -275,8 +278,8 @@ def run(cfg: DictConfig) -> None:
         tracker.log_artifact(summary_path, artifact_path="summary/files")
         tracker.log_artifact(metrics_path, artifact_path="summary/files")
 
-    print(f"[eval] Saved summary: {summary_path}")
-    print(f"[eval] Saved metrics: {metrics_path}")
+    logger.logger.info(f"[eval] Saved summary: {summary_path}")
+    logger.logger.info(f"[eval] Saved metrics: {metrics_path}")
 
 
 def main(argv: list[str] | None = None) -> None:

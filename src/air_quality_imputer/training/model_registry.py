@@ -3,6 +3,7 @@ from typing import Any, Mapping
 
 from omegaconf import DictConfig, OmegaConf
 
+from air_quality_imputer import exceptions
 from air_quality_imputer.models.pypots_imputers import SAITSConfig, SAITSImputer
 from air_quality_imputer.models.transformer_imputer import TransformerConfig, TransformerImputer
 
@@ -41,17 +42,23 @@ def build_model_from_cfg(
 ):
     model_type = str(model_cfg.type)
     if model_type not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise exceptions.ModelBuildError(f"Unknown model type: {model_type}")
 
     spec = MODEL_REGISTRY[model_type]
     config_cls = spec["config_cls"]
     model_cls = spec["model_cls"]
+    allowed_keys = set(getattr(config_cls, "__dataclass_fields__", {}))
 
     params = _to_plain_dict(model_cfg.params)
+    unknown = sorted(set(params) - allowed_keys)
+    if unknown:
+        from air_quality_imputer.logger import logger
+
+        logger.warning(f"Ignoring unsupported params for {model_type}: {unknown}")
+        params = {k: v for k, v in params.items() if k in allowed_keys}
     params["n_features"] = n_features
     params["block_size"] = block_size
     if runtime_params:
-        allowed_keys = set(getattr(config_cls, "__dataclass_fields__", {}))
         for key, value in runtime_params.items():
             if key in allowed_keys:
                 params[key] = value
@@ -64,7 +71,7 @@ def build_model_from_cfg(
 
 def build_model_from_checkpoint(model_type: str, model_config):
     if model_type not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise exceptions.ModelBuildError(f"Unknown model type: {model_type}")
     config_cls = MODEL_REGISTRY[model_type]["config_cls"]
     if isinstance(model_config, Mapping):
         model_config = config_cls(**model_config)

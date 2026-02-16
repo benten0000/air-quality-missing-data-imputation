@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
-import torch
 from omegaconf import DictConfig, OmegaConf
 
 
@@ -30,9 +29,15 @@ def load_params(params_path: Path) -> DictConfig:
 def set_global_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    except Exception:
+        # Prepare stage should still work in environments without a working PyTorch runtime.
+        pass
 
 
 def derive_seed(base_seed: int, station: str, model_name: str) -> int:

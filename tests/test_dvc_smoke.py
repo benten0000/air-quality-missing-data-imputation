@@ -14,6 +14,7 @@ class DVCSmokeTests(unittest.TestCase):
             "is busy, it is being blocked by",
             ".dvc/tmp/rwlock",
             "requires 'dvc-s3' to be installed",
+            "attempt to write a readonly database",
         ]
         if any(marker in stderr for marker in recoverable_markers):
             self.skipTest(stderr.strip())

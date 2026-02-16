@@ -1,33 +1,26 @@
 experiment:
-  dataset: beijing_air_quality
-  stations: [combined]
-  models: [transformer, saits]
+  dataset: electricity
+  stations: [electricity]
+  models: [transformer]
   features: []
   never_mask_features: []
-  block_size: 24
-  step_size: 1
   seed: 42
 
 training:
-  epochs: 100
+  epochs: 500
+  # SAITS paper: batch size fixed to 128; early stop after 30 epochs without MAE decrease.
   batch_size: 256
-  lr: 0.001
-  patience: 20
-  min_delta: 0.0001
+  patience: 80
+  min_delta: 0.0
   train_mask:
     transformer:
       mode: random
       missing_rate: 0.2
-      block_min_len: 2
-      block_max_len: 14
-      block_missing_prob: 0.35
-      feature_block_prob: 0.6
-      block_no_overlap: true
     saits:
       mode: random
       missing_rate: 0.2
   shared_validation_mask:
-    missing_rate: 0.2
+    missing_rate: 0.1
     mask_mode: random
     block_min_len: 2
     block_max_len: 14
@@ -36,7 +29,7 @@ training:
     block_no_overlap: true
 
 evaluation:
-  missing_rate: 0.2
+  missing_rate: 0.4
   mask_mode: random
   block_min_len: 2
   block_max_len: 14
@@ -45,16 +38,24 @@ evaluation:
   block_no_overlap: true
   mlflow_model_refs:
     transformer: null
-    saits: null
+    saits: runs:/dbe7ccae1f0044b1a9b209c10ebfde7e/model/files
 
 models:
   transformer:
     type: classic_transformer
     checkpoint_name: transformer.pt
     params:
-      d_model: 128
-      n_layer: 4
+      # Aligned to SAITS-base capacity for paper-style comparable baseline runs.
+      learning_rate: 0.001
+      d_model: 256
+      n_layer: 2
       n_head: 4
+      d_ffn: 512
+      d_k: null
+      d_v: null
+      diagonal_attention_mask: true
+      ORT_weight: 1.0
+      MIT_weight: 1.0
       dropout: 0.1
       bias: true
       norm_eps: 0.000001
@@ -62,10 +63,10 @@ models:
       compile_mode: reduce-overhead
       compile_dynamic: false
       optimizer_fused: true
-      optimizer_weight_decay: 0.01
-      scheduler_warmup_ratio: 0.125
-      scheduler_warmup_start_factor: 0.3
-      scheduler_min_lr: 0.0000001
+      optimizer_weight_decay: 0.0
+      scheduler_warmup_ratio: 0.0
+      scheduler_warmup_start_factor: 1.0
+      scheduler_min_lr: 0.001
       grad_clip_norm: 0.5
       dataloader_num_workers: -1
       dataloader_prefetch_factor: 4
@@ -75,10 +76,17 @@ models:
     type: saits
     checkpoint_name: saits.pt
     params:
+      # SAITS-base (Appendix A in 2202.08516v5): lr=1e-3, dropout=0.1, N=2, d_model=256, d_ffn=128, h=4.
+      learning_rate: 0.001
+      scheduler_warmup_ratio: 0.0
+      scheduler_warmup_start_factor: 0.3
+      scheduler_min_lr: 0.001
       # Architecture
-      d_model: 128
-      n_layers: 4
+      d_model: 256
+      n_layers: 2
       n_head: 4
+      d_k: null
+      d_v: null
       dropout: 0.1
       attn_dropout: 0.1
       diagonal_attention_mask: true
@@ -100,10 +108,8 @@ models:
 
       # Optimizer
       optimizer: adam
-      optimizer_weight_decay: 0.01
-      optimizer_betas: [0.9, 0.999]
-      optimizer_eps: 0.00000001
-      learning_rate: null
+      optimizer_weight_decay: 0.0
+      # optimizer_betas / optimizer_eps removed; use library defaults.
 
 paths:
   data_dir: data/raw
@@ -117,24 +123,66 @@ dataset:
     air_quality:
       loader: air_quality_csv
       data_dir: data/raw
-      feature_names: [PM10, PM2.5, temperature, rain, pressure, precipitation, wind_speed, clouds, wind_direction]
+      feature_names: []
+      split:
+        train_ratio: 0.7
+        val_ratio: 0.1
+        test_ratio: 0.2
+      window:
+        block_size: 24
+        step_size: 24
     beijing_air_quality:
       loader: air_quality_csv
-      data_dir: data/datasets/beijing_air_quality/materialized
+      data_dir: data/datasets/beijing_air_quality/raw
+      # SAITS paper uses 12 sites x 11 variables = 132 features (via combined station).
       feature_names: [PM2.5, PM10, SO2, NO2, CO, O3, TEMP, PRES, DEWP, RAIN, WSPM]
+      split:
+        test_start: "2013-03-01 00:00:00"
+        test_end: "2013-12-31 23:00:00"
+        val_start: "2014-01-01 00:00:00"
+        val_end: "2014-10-31 23:00:00"
+        train_start: "2014-11-01 00:00:00"
+        train_end: "2017-02-28 23:00:00"
+      window:
+        block_size: 24
+        step_size: 24
     electricity:
-      loader: npz
-      npz_path: data/datasets/electricity/npz/electricity.npz
-      data_dir: data/datasets/electricity/materialized
-      value_key: X
-      datetime_key: datetime
-      feature_names_key: feature_names
-      ensure:
-        kind: electricity_uci
-        cache_dir: data/datasets/electricity/cache
-        start_client: 1
-        n_clients: 16
-        resample_frequency: 1h
+      loader: air_quality_csv
+      data_dir: data/datasets/electricity/raw
+      feature_names: []
+      split:
+        test_start: "2011-01-01 00:15:00"
+        test_end: "2011-10-31 23:45:00"
+        val_start: "2011-11-01 00:00:00"
+        val_end: "2012-08-31 23:45:00"
+        train_start: "2012-09-01 00:00:00"
+        train_end: "2014-12-31 23:45:00"
+      window:
+        block_size: 100
+        step_size: 100
+    physionet2012:
+      loader: physionet_csv
+      data_dir: data/datasets/physionet2012/raw
+      feature_names: []
+      split:
+        scheme: physionet2012
+      window:
+        block_size: 48
+        step_size: 48
+    ett:
+      loader: ett_csv
+      data_dir: data/datasets/ett/raw
+      feature_names: []
+      split:
+        test_start: "2016-07-01 00:00:00"
+        test_end: "2016-10-31 23:45:00"
+        val_start: "2016-11-01 00:00:00"
+        val_end: "2017-02-28 23:45:00"
+        train_start: "2017-03-01 00:00:00"
+        train_end: null
+      window:
+        block_size: 24
+        step_size: 12
 
 tracking:
   enabled: true

@@ -4,8 +4,7 @@ stages:
     deps:
       - src/air_quality_imputer/pipeline/prepare_data.py
       - src/air_quality_imputer/pipeline/common.py
-      - src/air_quality_imputer/pipeline/dataset_adapters.py
-      - src/air_quality_imputer/data/electricity_dataset.py
+      - src/air_quality_imputer/pipeline/dataset_inputs.py
       - src/air_quality_imputer/training/data_utils.py
       - configs/pipeline/params.yaml
       - data/raw

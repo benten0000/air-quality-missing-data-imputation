@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
+from air_quality_imputer import exceptions
 from air_quality_imputer.pipeline.train_models import run
 
 
@@ -214,7 +215,7 @@ class TrainModelsTests(unittest.TestCase):
                 }
             )
 
-            with self.assertRaises(ValueError):
+            with self.assertRaises(exceptions.ValidationError):
                 run(cfg)
 
 

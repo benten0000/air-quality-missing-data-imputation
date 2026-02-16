@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
+from typing import Any
 
 from omegaconf import DictConfig
 
+from air_quality_imputer import logger
 from air_quality_imputer.pipeline.common import build_parser, load_params, to_plain_dict
-from air_quality_imputer.pipeline.dataset_adapters import prepare_dataset_inputs
+from air_quality_imputer.pipeline.dataset_inputs import prepare_dataset_inputs
 from air_quality_imputer.training.data_utils import prepare_station_datasets
 
 
@@ -21,6 +23,49 @@ def run(cfg: DictConfig) -> None:
         stations=stations,
         requested_features=requested_features,
     )
+    split_cfg = dataset_info.get("split") if isinstance(dataset_info, dict) else None
+    window_cfg = dataset_info.get("window") if isinstance(dataset_info, dict) else None
+
+    def _maybe_int(value: Any) -> int | None:
+        if value in (None, "", "null"):
+            return None
+        return int(value)
+
+    exp_block_raw: Any = exp.get("block_size")
+    exp_step_raw: Any = exp.get("step_size")
+    rec_block_raw: Any = window_cfg.get("block_size") if isinstance(window_cfg, dict) else None
+    rec_step_raw: Any = window_cfg.get("step_size") if isinstance(window_cfg, dict) else None
+
+    exp_block = _maybe_int(exp_block_raw)
+    exp_step = _maybe_int(exp_step_raw)
+    rec_block = _maybe_int(rec_block_raw)
+    rec_step = _maybe_int(rec_step_raw)
+
+    if exp_block is None and rec_block is None:
+        raise ValueError("Missing block_size. Set experiment.block_size or dataset.definitions.<name>.window.block_size.")
+    if exp_step is None and rec_step is None:
+        raise ValueError("Missing step_size. Set experiment.step_size or dataset.definitions.<name>.window.step_size.")
+
+    if exp_block is not None:
+        block_size = exp_block
+    else:
+        assert rec_block is not None
+        block_size = rec_block
+    if exp_step is not None:
+        step_size = exp_step
+    else:
+        assert rec_step is not None
+        step_size = rec_step
+    if rec_block is not None and exp_block is not None and exp_block != int(rec_block):
+        logger.logger.warning(f"[prepare] block_size={exp_block} differs from dataset window.block_size={rec_block}")
+    if rec_step is not None and exp_step is not None and exp_step != int(rec_step):
+        logger.logger.warning(f"[prepare] step_size={exp_step} differs from dataset window.step_size={rec_step}")
+
+    # Only used when dataset split config does not specify a split scheme.
+    train_split_ratio = float(exp.get("train_split_ratio", 0.8))
+    val_split_ratio = float(exp.get("val_split_ratio", 0.1))
+    test_split_ratio = float(exp.get("test_split_ratio", 0.1))
+
     never_mask_set = set(exp.never_mask_features)
     never_mask_feature_indices = [index for index, feature in enumerate(features) if feature in never_mask_set]
 
@@ -34,10 +79,14 @@ def run(cfg: DictConfig) -> None:
             data_dir=data_dir,
             processed_dir=processed_dir,
             features=features,
-            block_size=int(exp.block_size),
-            step_size=int(exp.step_size),
+            block_size=block_size,
+            step_size=step_size,
             missing_rate=float(val_mask_cfg.missing_rate),
             seed=int(exp.seed),
+            train_split_ratio=train_split_ratio,
+            val_split_ratio=val_split_ratio,
+            test_split_ratio=test_split_ratio,
+            split_cfg=split_cfg if isinstance(split_cfg, dict) else None,
             mask_mode=str(val_mask_cfg.mask_mode),
             block_min_len=int(val_mask_cfg.block_min_len),
             block_max_len=int(val_mask_cfg.block_max_len),
@@ -56,7 +105,7 @@ def run(cfg: DictConfig) -> None:
                 "n_features": int(len(datasets["feature_cols"])),
             }
         )
-        print(
+        logger.logger.info(
             f"[prepare] {station}: train={datasets['X_train'].shape[0]}, "
             f"val={datasets['X_val_ori'].shape[0]}, test={datasets['X_test_ori'].shape[0]}"
         )
@@ -71,7 +120,7 @@ def run(cfg: DictConfig) -> None:
         "stations": manifest_rows,
     }
     manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
-    print(f"[prepare] Wrote manifest: {manifest_path}")
+    logger.logger.info(f"[prepare] Wrote manifest: {manifest_path}")
 
 
 def main(argv: list[str] | None = None) -> None:

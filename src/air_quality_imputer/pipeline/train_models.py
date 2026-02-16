@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from air_quality_imputer import exceptions, logger
 from air_quality_imputer.pipeline.common import (
     build_parser,
     derive_seed,
@@ -19,6 +20,14 @@ from air_quality_imputer.training.model_registry import build_model_from_cfg, co
 
 
 SUPPORTED_MODELS = {"transformer", "saits"}
+
+
+def _count_parameters(model: torch.nn.Module) -> tuple[int, int]:
+    if not hasattr(model, "parameters"):
+        return 0, 0
+    total = sum(int(p.numel()) for p in model.parameters())
+    trainable = sum(int(p.numel()) for p in model.parameters() if p.requires_grad)
+    return total, trainable
 
 
 def _load_windows(processed_dir: Path, station: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, Path]:
@@ -52,11 +61,23 @@ def _resolve_features(exp: DictConfig, processed_dir: Path, stations: list[str])
     if from_manifest:
         return from_manifest
     if not stations:
-        raise ValueError("No stations configured and no features available.")
+        raise exceptions.ValidationError("No stations configured and no features available.")
     X_train, *_ = _load_windows(processed_dir, stations[0])
     if X_train.ndim != 3 or X_train.shape[2] <= 0:
-        raise ValueError("Unable to infer features from prepared windows.")
+        raise exceptions.ValidationError("Unable to infer features from prepared windows.")
     return [f"feature_{i+1:03d}" for i in range(int(X_train.shape[2]))]
+
+
+def _resolve_block_size(exp: DictConfig, X_train: np.ndarray) -> int:
+    if X_train.ndim != 3 or int(X_train.shape[1]) <= 0:
+        raise exceptions.ValidationError("Invalid X_train shape; expected [n_windows, block_size, n_features].")
+    derived = int(X_train.shape[1])
+    configured = exp.get("block_size")
+    if configured is not None and int(configured) != derived:
+        logger.logger.warning(
+            f"[train] experiment.block_size={configured} differs from prepared windows block_size={derived}; using windows value."
+        )
+    return derived
 
 
 def _apply_transformer_train_mask(model_cfg: DictConfig, train_mask: dict[str, Any]) -> DictConfig:
@@ -88,14 +109,12 @@ def _model_train_mask(train_cfg: DictConfig, model_name: str) -> dict[str, Any]:
     value = cfg.get(model_name)
     if isinstance(value, dict):
         return {str(k): v for k, v in value.items()}
-    return {"mode": "random", "missing_rate": 0.2} if model_name == "saits" else {}
+    return {"mode": "random"} if model_name == "saits" else {}
 
 
 def _validate_saits_mask(train_mask: dict[str, Any]) -> None:
     if str(train_mask.get("mode", "random")).lower() != "random":
-        raise ValueError("SAITS supports only random train mask mode.")
-    if "missing_rate" in train_mask and abs(float(train_mask["missing_rate"]) - 0.2) > 1e-12:
-        raise ValueError("Current SAITS backend uses fixed MCAR rate=0.2 during training.")
+        raise exceptions.ValidationError("SAITS supports only random train mask mode.")
 
 
 def run(cfg: DictConfig) -> None:
@@ -108,13 +127,13 @@ def run(cfg: DictConfig) -> None:
     model_names = list(exp.models)
     unsupported = sorted(set(model_names) - SUPPORTED_MODELS)
     if unsupported:
-        raise ValueError(f"Unsupported models for V1 pipeline: {unsupported}")
+        raise exceptions.ModelBuildError(f"Unsupported models for V1 pipeline: {unsupported}")
 
     processed_dir = Path(cfg.paths.processed_dir)
     models_dir = Path(cfg.paths.models_dir)
     features = _resolve_features(exp, processed_dir=processed_dir, stations=stations)
     if "station" in features:
-        raise ValueError("'station' can no longer be used as a model feature. Remove it from experiment.features.")
+        raise exceptions.ValidationError("'station' can no longer be used as a model feature. Remove it from experiment.features.")
     n_features = len(features)
     never_mask_set = set(exp.never_mask_features)
     never_mask_idx = [i for i, f in enumerate(features) if f in never_mask_set]
@@ -126,7 +145,8 @@ def run(cfg: DictConfig) -> None:
     for station in stations:
         X_train, X_val_masked, X_val_ori, windows_path = _load_windows(processed_dir, station)
         if X_train.ndim != 3 or int(X_train.shape[2]) != n_features:
-            raise ValueError(f"Feature mismatch for station {station}.")
+            raise exceptions.ValidationError(f"Feature mismatch for station {station}.")
+        block_size = _resolve_block_size(exp, X_train)
         train_set = {"X": X_train, "never_mask_feature_indices": never_mask_idx}
         val_set = {"X": X_val_masked, "X_ori": X_val_ori}
 
@@ -139,11 +159,23 @@ def run(cfg: DictConfig) -> None:
 
             seed = derive_seed(base_seed, station=station, model_name=model_name)
             set_global_seed(seed)
+
+            # Make SAITS MCAR masking rate configurable and logged; PyPOTS uses DatasetForSAITS(rate=...).
+            runtime_params = None
+            if str(model_cfg.type) == "saits":
+                runtime_params = {"train_missing_rate": float(train_mask.get("missing_rate", 0.2) or 0.2)}
+
             model, model_config, model_type, checkpoint_name = build_model_from_cfg(
                 model_cfg,
                 n_features=n_features,
-                block_size=int(exp.block_size),
+                block_size=block_size,
+                runtime_params=runtime_params,
             )
+            if model_name == "transformer":
+                total_params, trainable_params = _count_parameters(model)
+                logger.logger.info(
+                    f"[train] transformer params (station={station}): total={total_params:,}, trainable={trainable_params:,}"
+                )
 
             run_name = f"train/{model_name}/{station}/seed-{seed}"
             with tracker.start_run(run_name=run_name, tags={"stage": "train", "model": model_name, "station": station, "seed": seed}):
@@ -151,14 +183,18 @@ def run(cfg: DictConfig) -> None:
                 tracker.log_params(to_plain_dict(train_cfg), prefix="training")
                 tracker.log_params(train_mask, prefix="training.train_mask")
                 tracker.log_params(to_plain_dict(model_cfg), prefix=f"models.{model_name}")
-                tracker.log_params({"n_features": n_features, "block_size": int(exp.block_size), "windows": str(windows_path)}, prefix="runtime")
+                runtime_logged = {"n_features": n_features, "block_size": block_size, "windows": str(windows_path)}
+                if model_name == "transformer":
+                    runtime_logged["model_params_total"] = total_params
+                    runtime_logged["model_params_trainable"] = trainable_params
+                tracker.log_params(runtime_logged, prefix="runtime")
 
                 fit_stats = model.fit(
                     train_set,
                     validation_data=val_set,
                     epochs=int(train_cfg.epochs),
                     batch_size=int(train_cfg.batch_size),
-                    initial_lr=float(train_cfg.lr),
+                    initial_lr=None,
                     patience=int(train_cfg.patience),
                     min_delta=float(train_cfg.min_delta),
                 )
@@ -177,10 +213,15 @@ def run(cfg: DictConfig) -> None:
                     model_path,
                 )
                 tracker.log_artifact(model_path, artifact_path="model/files")
+                # DagsHub UI "Models" column is reliably populated by an MLflow model artifact (MLmodel).
+                tracker.log_model_stub(
+                    local_path=model_path,
+                    model_name=model_name,
+                )
                 best_loss = fit_stats.get("best_loss") if isinstance(fit_stats, dict) else None
                 tracker.log_metrics({"train.loss.best": best_loss})
                 tracker.set_tags({"checkpoint_path": str(model_path)})
-                print(f"[train] Saved model: {model_path}")
+                logger.logger.info(f"[train] Saved model: {model_path}")
 
 
 def main(argv: list[str] | None = None) -> None:

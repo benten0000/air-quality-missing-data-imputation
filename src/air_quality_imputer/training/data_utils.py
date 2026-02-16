@@ -1,8 +1,10 @@
 from pathlib import Path
-from typing import Hashable, cast
+from typing import Any, Hashable, cast
 
 import numpy as np
 import pandas as pd
+
+from air_quality_imputer import exceptions, logger
 
 
 def mask_windows_block_feature(
@@ -97,8 +99,23 @@ def mask_windows_by_mode(
 ) -> np.ndarray:
     if mask_mode == "random":
         rng = np.random.default_rng(seed)
+        observed = ~np.isnan(x)
         masked = x.copy()
-        masked[rng.random(masked.shape) < missing_rate] = np.nan
+
+        maskable_observed = observed.copy()
+        if never_mask_feature_indices:
+            idx = np.asarray(never_mask_feature_indices, dtype=int)
+            idx = idx[(idx >= 0) & (idx < masked.shape[2])]
+            if idx.size:
+                maskable_observed[:, :, idx] = False
+
+        target_missing = int(round(float(missing_rate) * maskable_observed.sum()))
+        if target_missing > 0:
+            available = np.flatnonzero(maskable_observed.reshape(-1))
+            if available.size:
+                pick = rng.choice(available, size=min(target_missing, int(available.size)), replace=False)
+                flat = masked.reshape(-1)
+                flat[pick] = np.nan
     elif mask_mode in {"block", "block_feature"}:
         masked = mask_windows_block_feature(
             x,
@@ -112,7 +129,7 @@ def mask_windows_by_mode(
             never_mask_feature_indices=never_mask_feature_indices,
         )
     else:
-        raise ValueError(f"Unsupported mask_mode: {mask_mode}")
+        raise exceptions.ValidationError(f"Unsupported mask_mode: {mask_mode}")
 
     if never_mask_feature_indices:
         idx = np.asarray(never_mask_feature_indices, dtype=int)
@@ -132,6 +149,10 @@ def prepare_station_datasets(
     step_size: int,
     missing_rate: float,
     seed: int,
+    train_split_ratio: float = 0.8,
+    val_split_ratio: float = 0.1,
+    test_split_ratio: float = 0.1,
+    split_cfg: dict[str, Any] | None = None,
     mask_mode: str = "block",
     block_min_len: int = 2,
     block_max_len: int = 8,
@@ -145,37 +166,140 @@ def prepare_station_datasets(
         raise FileNotFoundError(f"Missing file for station {station}: {file_path}")
 
     if not features:
-        raise ValueError("No features provided. Set experiment.features or dataset.definitions.<name>.feature_names.")
+        raise exceptions.ValidationError("No features provided. Set experiment.features or dataset.definitions.<name>.feature_names.")
     if "station" in features:
-        raise ValueError("'station' can no longer be used as a model feature. Remove it from experiment.features.")
+        raise exceptions.ValidationError("'station' can no longer be used as a model feature. Remove it from experiment.features.")
 
     df = pd.read_csv(file_path, parse_dates=["datetime"])
     if "station" in df.columns:
         unique = df["station"].dropna().astype(str).unique().tolist()
         if len(unique) > 1:
-            raise ValueError(
+            raise exceptions.ValidationError(
                 f"{file_path} contains multiple station values ({len(unique)}). "
                 "Split the file into one CSV per station."
             )
     required_cols = ["datetime", *features]
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
-        raise ValueError(f"Station {station} missing columns: {missing_cols}")
+        raise exceptions.ValidationError(f"Station {station} missing columns: {missing_cols}")
 
-    df = df[required_cols].copy()
+    has_series = "series_id" in df.columns
+    cols = (["series_id"] if has_series else []) + required_cols
+    df = df[cols].copy()
     df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
     datetime_subset: list[Hashable] = ["datetime"]
-    df = cast(pd.DataFrame, df.dropna(subset=datetime_subset).sort_values("datetime"))  # type: ignore[call-overload]
+    # For multi-series datasets (e.g. PhysioNet-2012), each series has overlapping timestamps.
+    # Keep each series contiguous so window extraction works correctly.
+    sort_cols = ["datetime"]
+    if "series_id" in df.columns:
+        sort_cols = ["series_id", "datetime"]
+    df = cast(pd.DataFrame, df.dropna(subset=datetime_subset).sort_values(sort_cols))  # type: ignore[call-overload]
     if df.empty:
-        raise ValueError(f"No valid rows found in {file_path}")
+        raise exceptions.DatasetLoadError(f"No valid rows found in {file_path}")
     df[features] = df[features].apply(pd.to_numeric, errors="coerce")
 
-    values = df[features].to_numpy(dtype=np.float32)
-    n = len(values)
-    train_end, val_end = int(0.8 * n), int(0.8 * n) + int(0.1 * n)
-    train, val, test = values[:train_end], values[train_end:val_end], values[val_end:]
-    if len(train) == 0:
-        raise ValueError("No train rows available after split; cannot fit scaler.")
+    def _split_date_ranges(frame: pd.DataFrame, cfg: dict[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        def _parse_int_date(value: int) -> pd.Timestamp | None:
+            # Support compact YYYYMMDD / YYYYMMDDHHMM / YYYYMMDDHHMMSS integers in YAML.
+            s = str(value)
+            try:
+                if len(s) == 8:
+                    return pd.to_datetime(s, format="%Y%m%d")
+                if len(s) == 12:
+                    return pd.to_datetime(s, format="%Y%m%d%H%M")
+                if len(s) == 14:
+                    return pd.to_datetime(s, format="%Y%m%d%H%M%S")
+            except Exception:
+                return None
+            return None
+
+        def _dt(key: str) -> pd.Timestamp | None:
+            v = cfg.get(key)
+            if v in (None, "", "null"):
+                return None
+            if isinstance(v, int):
+                parsed = _parse_int_date(v)
+                if parsed is not None:
+                    return parsed
+            return pd.to_datetime(v)
+
+        ranges = {
+            "train": (_dt("train_start"), _dt("train_end")),
+            "val": (_dt("val_start"), _dt("val_end")),
+            "test": (_dt("test_start"), _dt("test_end")),
+        }
+        out: dict[str, pd.DataFrame] = {}
+        for name, (start, end) in ranges.items():
+            mask = pd.Series(True, index=frame.index)
+            if start is not None:
+                mask &= frame["datetime"] >= start
+            if end is not None:
+                mask &= frame["datetime"] <= end
+            subset = cast(pd.DataFrame, frame.loc[mask].copy())
+            order = np.argsort(cast(pd.Series, subset["datetime"]).to_numpy())
+            out[name] = cast(pd.DataFrame, subset.iloc[order])
+        return out["train"], out["val"], out["test"]
+
+    def _split_random_series(frame: pd.DataFrame, scheme: str | None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        series_ids = frame["series_id"].dropna().astype(int).unique().tolist()
+        if not series_ids:
+            raise exceptions.DatasetLoadError("No series_id values found for random_series split.")
+        rng = np.random.default_rng(seed)
+        rng.shuffle(series_ids)
+        n_total = len(series_ids)
+        if scheme == "physionet2012":
+            n_test = int(round(0.2 * n_total))
+            test_ids = set(series_ids[:n_test])
+            rest = series_ids[n_test:]
+            n_val = int(round(0.2 * len(rest)))
+            val_ids = set(rest[:n_val])
+            train_ids = set(rest[n_val:])
+        else:
+            if train_split_ratio + val_split_ratio + test_split_ratio <= 0:
+                raise exceptions.ValidationError("Invalid split ratios.")
+            n_train = int(round(train_split_ratio * n_total))
+            n_val = int(round(val_split_ratio * n_total))
+            train_ids = set(series_ids[:n_train])
+            val_ids = set(series_ids[n_train : n_train + n_val])
+            test_ids = set(series_ids[n_train + n_val :])
+        train_f = cast(pd.DataFrame, frame[frame["series_id"].astype(int).isin(train_ids)].copy())
+        val_f = cast(pd.DataFrame, frame[frame["series_id"].astype(int).isin(val_ids)].copy())
+        test_f = cast(pd.DataFrame, frame[frame["series_id"].astype(int).isin(test_ids)].copy())
+        return train_f, val_f, test_f
+
+    scheme = str(split_cfg.get("scheme")).strip().lower() if split_cfg and split_cfg.get("scheme") else None
+    if split_cfg:
+        train_split_ratio = float(split_cfg.get("train_ratio", train_split_ratio))
+        val_split_ratio = float(split_cfg.get("val_ratio", val_split_ratio))
+        test_split_ratio = float(split_cfg.get("test_ratio", test_split_ratio))
+
+    has_date_ranges = False
+    if split_cfg:
+        for key in ("train_start", "train_end", "val_start", "val_end", "test_start", "test_end"):
+            if split_cfg.get(key) not in (None, "", "null"):
+                has_date_ranges = True
+                break
+
+    if has_date_ranges:
+        train_df, val_df, test_df = _split_date_ranges(df, split_cfg or {})
+    elif has_series:
+        # Multi-series datasets (like PhysioNet) are split at the series level.
+        train_df, val_df, test_df = _split_random_series(df, scheme=scheme)
+    else:
+        values = df[features].to_numpy(dtype=np.float32)
+        n = len(values)
+        train_end, val_end = int(train_split_ratio * n), int(train_split_ratio * n) + int(val_split_ratio * n)
+        train_vals, val_vals, test_vals = values[:train_end], values[train_end:val_end], values[val_end:]
+        train_df = cast(pd.DataFrame, df.iloc[: len(train_vals)].copy())
+        val_df = cast(pd.DataFrame, df.iloc[len(train_vals) : len(train_vals) + len(val_vals)].copy())
+        test_df = cast(pd.DataFrame, df.iloc[len(train_vals) + len(val_vals) :].copy())
+
+    if train_df.empty:
+        raise exceptions.DatasetLoadError("No train rows available after split; cannot fit scaler.")
+
+    train = train_df[features].to_numpy(dtype=np.float32)
+    val = val_df[features].to_numpy(dtype=np.float32)
+    test = test_df[features].to_numpy(dtype=np.float32)
 
     mean, std = np.nanmean(train, axis=0), np.nanstd(train, axis=0)
     std = np.where(np.isfinite(std) & (std > 0), std, 1.0)
@@ -183,16 +307,37 @@ def prepare_station_datasets(
     val_scaled = ((val - mean) / std).astype(np.float32, copy=False)
     test_scaled = ((test - mean) / std).astype(np.float32, copy=False)
 
-    def _windows(arr: np.ndarray) -> np.ndarray:
+    def _windows_2d(arr: np.ndarray) -> np.ndarray:
         if len(arr) < block_size:
             return np.empty((0, block_size, len(features)), dtype=np.float32)
-        return np.lib.stride_tricks.sliding_window_view(arr, block_size, axis=0)[::step_size].astype(
-            np.float32, copy=False
-        )
+        windows = np.lib.stride_tricks.sliding_window_view(arr, block_size, axis=0)[::step_size]
+        # NumPy produces [n_windows, n_features, block_size] here for 2D inputs; transpose to [n_windows, block_size, n_features].
+        return np.transpose(windows, (0, 2, 1)).astype(np.float32, copy=False)
 
-    X_train = _windows(train_scaled)
-    X_val_ori = _windows(val_scaled)
-    X_test_ori = _windows(test_scaled)
+    def _windows_by_series(frame: pd.DataFrame, scaled_values: np.ndarray) -> np.ndarray:
+        if "series_id" not in frame.columns:
+            return _windows_2d(scaled_values)
+        out_windows: list[np.ndarray] = []
+        # series blocks must align with scaled_values row order
+        series = frame["series_id"].to_numpy()
+        if len(series) != len(scaled_values):
+            raise RuntimeError("series_id alignment mismatch with scaled values.")
+        # Find contiguous blocks per series after sorting by datetime above.
+        start = 0
+        while start < len(series):
+            sid = series[start]
+            end = start + 1
+            while end < len(series) and series[end] == sid:
+                end += 1
+            w = _windows_2d(scaled_values[start:end])
+            if w.size:
+                out_windows.append(w)
+            start = end
+        return np.concatenate(out_windows, axis=0) if out_windows else np.empty((0, block_size, len(features)), dtype=np.float32)
+
+    X_train = _windows_by_series(train_df, train_scaled)
+    X_val_ori = _windows_by_series(val_df, val_scaled)
+    X_test_ori = _windows_by_series(test_df, test_scaled)
 
     out_data_station = processed_dir / station
     out_data_station.mkdir(parents=True, exist_ok=True)

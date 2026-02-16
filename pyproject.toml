@@ -24,7 +24,6 @@ dependencies = [
 aqi-prepare = "air_quality_imputer.pipeline.prepare_data:main"
 aqi-train-models = "air_quality_imputer.pipeline.train_models:main"
 aqi-evaluate-models = "air_quality_imputer.pipeline.evaluate_models:main"
-aqi-download-electricity = "air_quality_imputer.data.electricity_dataset:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

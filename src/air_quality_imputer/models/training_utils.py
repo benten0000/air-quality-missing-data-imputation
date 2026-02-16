@@ -4,17 +4,27 @@ from math import ceil
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
+from air_quality_imputer import exceptions
+from air_quality_imputer.logger import logger
+
 
 def configure_cuda_runtime(device: torch.device) -> None:
     if device.type != "cuda" or not torch.cuda.is_available():
         return
-    torch.set_float32_matmul_precision("high")
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cuda.enable_math_sdp(True)
+    # Guard optional knobs across torch builds/versions.
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.benchmark = True
+        if hasattr(torch.backends.cudnn, "allow_tf32"):
+            torch.backends.cudnn.allow_tf32 = True
+    if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+        torch.backends.cuda.matmul.allow_tf32 = True
+    if hasattr(torch.backends, "cuda"):
+        for name in ("enable_flash_sdp", "enable_mem_efficient_sdp", "enable_math_sdp"):
+            fn = getattr(torch.backends.cuda, name, None)
+            if callable(fn):
+                fn(True)
 
 
 def maybe_compile_model(model, config, device: torch.device):
@@ -27,7 +37,7 @@ def maybe_compile_model(model, config, device: torch.device):
             dynamic=bool(getattr(config, "compile_dynamic", False)),
         )
     except Exception as exc:
-        print(f"torch.compile unavailable, fallback to eager mode: {exc}")
+        logger.warning(f"torch.compile unavailable, fallback to eager mode: {exc}")
         return model
 
 
@@ -87,7 +97,7 @@ def sample_block_feature_train_mask(
     if mode == "block":
         mode = "block_feature"
     if mode != "block_feature":
-        raise ValueError(f"Unsupported train_mask_mode: {mode}")
+        raise exceptions.ValidationError(f"Unsupported train_mask_mode: {mode}")
 
     min_len = int(getattr(config, "train_block_min_len", 2))
     max_len = int(getattr(config, "train_block_max_len", 14))

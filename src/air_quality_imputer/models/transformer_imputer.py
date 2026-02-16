@@ -1,23 +1,42 @@
 from dataclasses import dataclass
+from typing import TypedDict
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from air_quality_imputer.models.base import BaseImputer
 from air_quality_imputer.models.training_utils import (
     build_tensor_dataloader,
     configure_cuda_runtime,
     maybe_compile_model,
     sample_block_feature_train_mask,
 )
+from air_quality_imputer import exceptions
+from air_quality_imputer.logger import logger
+
+
+class FitStatsDict(TypedDict):
+    best_loss: float | None
+    stopped_epoch: int
+
+
+class ImputationDatasetDict(TypedDict):
+    X: np.ndarray
+    never_mask_feature_indices: list[int] | None
+
+
+class ValidationDatasetDict(TypedDict):
+    X: np.ndarray
+    X_ori: np.ndarray | None
 
 
 class RotaryPositionalEncoding(nn.Module):
     def __init__(self, head_dim: int, max_len: int = 5000):
         super().__init__()
         if head_dim % 2 != 0:
-            raise ValueError(f"RoPE requires even head_dim, got {head_dim}")
+            raise exceptions.ValidationError(f"RoPE requires even head_dim, got {head_dim}")
         theta = 1.0 / (10000 ** (torch.arange(0, head_dim, 2).float() / head_dim))
         self.register_buffer("theta", theta)
         positions = torch.arange(max_len).unsqueeze(1)
@@ -48,30 +67,49 @@ class RMSNorm(nn.Module):
 class MultiHeadSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        if config.d_model % config.n_head != 0:
-            raise ValueError("d_model must be divisible by n_head")
-        self.c_attn = nn.Linear(config.d_model, 3 * config.d_model, bias=config.bias)
-        self.c_proj = nn.Linear(config.d_model, config.d_model, bias=config.bias)
-        self.resid_dropout = nn.Dropout(config.dropout)
         self.n_head = config.n_head
         self.dropout = config.dropout
-        self.head_dim = config.d_model // config.n_head
-        self.rotary = RotaryPositionalEncoding(self.head_dim)
+        self.diagonal_attention_mask = bool(config.diagonal_attention_mask)
+        if self.n_head <= 0:
+            raise exceptions.ValidationError("n_head must be > 0")
+
+        if config.d_k is None:
+            if config.d_model % self.n_head != 0:
+                raise exceptions.ValidationError("d_model must be divisible by n_head when d_k is not set")
+            self.d_k = config.d_model // self.n_head
+        else:
+            self.d_k = int(config.d_k)
+        if config.d_v is None:
+            if config.d_model % self.n_head != 0:
+                raise exceptions.ValidationError("d_model must be divisible by n_head when d_v is not set")
+            self.d_v = config.d_model // self.n_head
+        else:
+            self.d_v = int(config.d_v)
+        if self.d_k <= 0 or self.d_v <= 0:
+            raise exceptions.ValidationError("d_k and d_v must be > 0")
+        if self.d_k % 2 != 0:
+            raise exceptions.ValidationError("d_k must be even for rotary positional encoding")
+
+        self.q_proj = nn.Linear(config.d_model, self.n_head * self.d_k, bias=config.bias)
+        self.k_proj = nn.Linear(config.d_model, self.n_head * self.d_k, bias=config.bias)
+        self.v_proj = nn.Linear(config.d_model, self.n_head * self.d_v, bias=config.bias)
+        self.c_proj = nn.Linear(self.n_head * self.d_v, config.d_model, bias=config.bias)
+        self.resid_dropout = nn.Dropout(config.dropout)
+        self.rotary = RotaryPositionalEncoding(self.d_k)
 
     def forward(self, x):
-        batch_size, seq_len, channels = x.size()
+        batch_size, seq_len, _ = x.size()
 
-        qkv = self.c_attn(x)
-        q, k, v = qkv.chunk(3, dim=-1)
-
-        q = q.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        q = self.q_proj(x).view(batch_size, seq_len, self.n_head, self.d_k).transpose(1, 2)
+        k = self.k_proj(x).view(batch_size, seq_len, self.n_head, self.d_k).transpose(1, 2)
+        v = self.v_proj(x).view(batch_size, seq_len, self.n_head, self.d_v).transpose(1, 2)
 
         q = self.rotary(q)
         k = self.rotary(k)
 
-        attn_mask = torch.eye(seq_len, device=x.device, dtype=q.dtype) * -1e9
+        attn_mask = None
+        if self.diagonal_attention_mask:
+            attn_mask = torch.eye(seq_len, device=x.device, dtype=q.dtype) * -1e9
         y = F.scaled_dot_product_attention(
             q,
             k,
@@ -80,14 +118,16 @@ class MultiHeadSelfAttention(nn.Module):
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=False,
         )
-        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, channels)
+        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, self.n_head * self.d_v)
         return self.resid_dropout(self.c_proj(y))
 
 
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_dim = 4 * config.d_model
+        hidden_dim = int(config.d_ffn) if config.d_ffn is not None else (4 * config.d_model)
+        if hidden_dim <= 0:
+            raise exceptions.ValidationError("d_ffn must be > 0")
         self.c_fc = nn.Linear(config.d_model, hidden_dim, bias=config.bias)
         self.c_gate = nn.Linear(config.d_model, hidden_dim, bias=config.bias)
         self.c_proj = nn.Linear(hidden_dim, config.d_model, bias=config.bias)
@@ -121,9 +161,16 @@ class TransformerConfig:
     d_model: int = 128
     n_layer: int = 3
     n_head: int = 4
+    d_ffn: int | None = None
+    d_k: int | None = None
+    d_v: int | None = None
+    diagonal_attention_mask: bool = True
     dropout: float = 0.1
     bias: bool = True
     norm_eps: float = 1e-6
+    learning_rate: float = 1e-3
+    ORT_weight: float = 1.0
+    MIT_weight: float = 1.0
 
     train_mask_mode: str = "block_feature"
     train_missing_rate: float = 0.25
@@ -148,30 +195,50 @@ class TransformerConfig:
     dataloader_pin_memory: bool = True
 
 
-class TransformerImputer(nn.Module):
+import torch
+import torch.nn as nn
+
+class TransformerImputer(nn.Module, BaseImputer):
     def __init__(self, config):
         super().__init__()
         self.config = config
 
         self.feature_proj = nn.Linear(config.n_features, config.d_model)
         self.mask_proj = nn.Linear(config.n_features, config.d_model, bias=config.bias)
-        self.combined_proj = nn.Linear(2 * config.d_model, config.d_model)
+
+        # FiLM: mask_embedded -> (scale, shift) za x_embedded
+        self.film = nn.Linear(config.d_model, 2 * config.d_model, bias=True)
+
+        # Learnable fill value for missing inputs before projection
+        self.missing_value = nn.Parameter(torch.zeros(config.n_features, dtype=torch.float32))
 
         self.transformer = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
         self.ln_f = RMSNorm(config.d_model, eps=config.norm_eps)
         self.output_head = nn.Linear(config.d_model, config.n_features)
 
+        # stabilno: na začetku identiteta (scale=0, shift=0)
+        nn.init.zeros_(self.film.weight)
+        nn.init.zeros_(self.film.bias)
+
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        x_embedded = self.feature_proj(x)
+        # mask: 1 observed, 0 missing (float)
+        mv = self.missing_value.view(1, 1, -1).to(dtype=x.dtype, device=x.device)
+        x_filled = x * mask + mv * (1.0 - mask)
+
+        x_embedded = self.feature_proj(x_filled)
         mask_embedded = self.mask_proj(mask)
-        combined = torch.cat([x_embedded, mask_embedded], dim=-1)
-        combined = self.combined_proj(combined)
+
+        # FiLM kondicioniranje
+        scale, shift = self.film(mask_embedded).chunk(2, dim=-1)
+        scale = torch.tanh(scale)  # omeji skalo
+        combined = x_embedded * (1.0 + scale) + shift
 
         for block in self.transformer:
             combined = block(combined)
 
         combined = self.ln_f(combined)
         return self.output_head(combined)
+
 
     def _sample_train_mask(self, observed_mask: torch.Tensor, never_mask_indices: list[int] | None = None) -> torch.Tensor:
         return sample_block_feature_train_mask(
@@ -180,50 +247,37 @@ class TransformerImputer(nn.Module):
             never_mask_indices=never_mask_indices,
         )
 
-    def fit(
-        self,
-        dataset,
-        epochs=300,
-        batch_size=128,
-        initial_lr=1e-3,
-        patience=250,
-        min_delta=0.0,
-        validation_data=None,
-    ):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.to(device)
+    def _setup_device(self) -> torch.device:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def _build_optimizer(self, device: torch.device, initial_lr: float | None) -> torch.optim.Optimizer:
         cfg = self.config
-
-        compiled_model = maybe_compile_model(self, cfg, device)
-        configure_cuda_runtime(device)
-
-        x_tensor = torch.tensor(dataset["X"], dtype=torch.float32)
-
+        effective_lr = float(cfg.learning_rate) if initial_lr is None else float(initial_lr)
         amp = device.type == "cuda"
-        scaler = torch.GradScaler(device.type, enabled=amp)
-
         use_fused = bool(cfg.optimizer_fused) and amp
         weight_decay = float(cfg.optimizer_weight_decay)
         try:
             optimizer = torch.optim.AdamW(
-                compiled_model.parameters(),
-                lr=initial_lr,
+                self.parameters(),
+                lr=effective_lr,
                 weight_decay=weight_decay,
                 fused=use_fused,
             )
         except Exception:
             optimizer = torch.optim.AdamW(
-                compiled_model.parameters(),
-                lr=initial_lr,
+                self.parameters(),
+                lr=effective_lr,
                 weight_decay=weight_decay,
                 fused=False,
             )
+        return optimizer
 
+    def _build_scheduler(self, optimizer: torch.optim.Optimizer, epochs: int) -> torch.optim.lr_scheduler.SequentialLR:
+        cfg = self.config
         warmup_ratio = min(max(float(cfg.scheduler_warmup_ratio), 0.0), 1.0)
         warmup_epochs = max(1, int(round(epochs * warmup_ratio)))
         warmup_start_factor = float(cfg.scheduler_warmup_start_factor)
         eta_min = float(cfg.scheduler_min_lr)
-        grad_clip_norm = float(cfg.grad_clip_norm)
 
         warmup = torch.optim.lr_scheduler.LinearLR(
             optimizer,
@@ -236,7 +290,17 @@ class TransformerImputer(nn.Module):
             eta_min=eta_min,
         )
         scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup, main], milestones=[warmup_epochs])
+        return scheduler
 
+    def _build_dataloader(
+        self,
+        dataset: ImputationDatasetDict,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.utils.data.DataLoader:
+        cfg = self.config
+        amp = device.type == "cuda"
+        x_tensor = torch.tensor(dataset["X"], dtype=torch.float32)
         loader = build_tensor_dataloader(
             x_tensor=x_tensor,
             batch_size=batch_size,
@@ -247,51 +311,99 @@ class TransformerImputer(nn.Module):
             pin_memory=bool(cfg.dataloader_pin_memory),
             shuffle=True,
         )
+        return loader
 
-        never_mask_indices = dataset.get("never_mask_feature_indices")
+    def _train_epoch(
+        self,
+        compiled_model,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler.SequentialLR,
+        loader: torch.utils.data.DataLoader,
+        device: torch.device,
+        amp: bool,
+        scaler: torch.GradScaler,
+        grad_clip_norm: float,
+        ort_weight: float,
+        mit_weight: float,
+        never_mask_indices: list[int] | None = None,
+    ) -> tuple[float, int]:
+        compiled_model.train()
+        total_loss = 0.0
+        n_batches = 0
+
+        for (batch_x_cpu,) in loader:
+            batch_x = batch_x_cpu.to(device, non_blocking=amp)
+            original_mask = (~torch.isnan(batch_x)).float()
+            mit_mask = self._sample_train_mask(original_mask, never_mask_indices=never_mask_indices)
+            if not mit_mask.any():
+                continue
+
+            x_in = batch_x.clone()
+            x_in[mit_mask] = 0
+            input_mask = original_mask.clone()
+            input_mask[mit_mask] = 0
+
+            torch.nan_to_num_(x_in, 0.0)
+            target = torch.nan_to_num(batch_x.clone(), 0.0)
+
+            with torch.autocast(device_type=device.type, enabled=amp):
+                preds = compiled_model(x_in, input_mask)
+                mit_loss = torch.abs(preds[mit_mask] - target[mit_mask]).mean() if mit_mask.sum() > 0 else x_in.new_zeros(())
+                obs_mask = original_mask.bool() & ~mit_mask
+                ort_loss = torch.abs(preds[obs_mask] - target[obs_mask]).mean() if obs_mask.sum() > 0 else x_in.new_zeros(())
+                loss = (mit_weight * mit_loss) + (ort_weight * ort_loss)
+
+            if torch.isfinite(loss).item() and loss.item() > 0:
+                optimizer.zero_grad(set_to_none=True)
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(compiled_model.parameters(), max_norm=grad_clip_norm)
+                scaler.step(optimizer)
+                scaler.update()
+
+                total_loss += float(loss.item())
+                n_batches += 1
+
+        return total_loss, n_batches
+
+    def _train_loop(
+        self,
+        compiled_model,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler.SequentialLR,
+        loader: torch.utils.data.DataLoader,
+        device: torch.device,
+        amp: bool,
+        scaler: torch.GradScaler,
+        epochs: int,
+        patience: int,
+        min_delta: float,
+        validation_data: ValidationDatasetDict | None,
+        grad_clip_norm: float,
+        ort_weight: float,
+        mit_weight: float,
+        never_mask_indices: list[int] | None = None,
+    ) -> FitStatsDict:
         best = float("inf")
         patience_counter = 0
         use_val = validation_data is not None
-
         last_epoch = -1
+
         for epoch in range(epochs):
             last_epoch = epoch
-            compiled_model.train()
-            total_loss = 0.0
-            n_batches = 0
-
-            for (batch_x_cpu,) in loader:
-                batch_x = batch_x_cpu.to(device, non_blocking=amp)
-                original_mask = (~torch.isnan(batch_x)).float()
-                mit_mask = self._sample_train_mask(original_mask, never_mask_indices=never_mask_indices)
-                if not mit_mask.any():
-                    continue
-
-                x_in = batch_x.clone()
-                x_in[mit_mask] = 0
-                input_mask = original_mask.clone()
-                input_mask[mit_mask] = 0
-
-                torch.nan_to_num_(x_in, 0.0)
-                target = torch.nan_to_num(batch_x.clone(), 0.0)
-
-                with torch.autocast(device_type=device.type, enabled=amp):
-                    preds = compiled_model(x_in, input_mask)
-                    mit_loss = torch.abs(preds[mit_mask] - target[mit_mask]).mean() if mit_mask.sum() > 0 else x_in.new_zeros(())
-                    obs_mask = original_mask.bool() & ~mit_mask
-                    ort_loss = torch.abs(preds[obs_mask] - target[obs_mask]).mean() if obs_mask.sum() > 0 else x_in.new_zeros(())
-                    loss = mit_loss + ort_loss
-
-                if torch.isfinite(loss).item() and loss.item() > 0:
-                    optimizer.zero_grad(set_to_none=True)
-                    scaler.scale(loss).backward()
-                    scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(compiled_model.parameters(), max_norm=grad_clip_norm)
-                    scaler.step(optimizer)
-                    scaler.update()
-
-                    total_loss += float(loss.item())
-                    n_batches += 1
+            total_loss, n_batches = self._train_epoch(
+                compiled_model=compiled_model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                loader=loader,
+                device=device,
+                amp=amp,
+                scaler=scaler,
+                grad_clip_norm=grad_clip_norm,
+                ort_weight=ort_weight,
+                mit_weight=mit_weight,
+                never_mask_indices=never_mask_indices,
+            )
 
             if n_batches == 0:
                 continue
@@ -303,9 +415,9 @@ class TransformerImputer(nn.Module):
             current_lr = scheduler.get_last_lr()[0]
             if epoch % 10 == 0 or epoch < 10:
                 if val_loss is not None and not np.isnan(val_loss):
-                    print(f"Epoch {epoch:3d}, Train: {train_loss:.6f}, Val: {val_loss:.6f}, LR: {current_lr:.2e}")
+                    logger.info(f"Epoch {epoch:3d}, Train: {train_loss:.6f}, Val: {val_loss:.6f}, LR: {current_lr:.2e}")
                 else:
-                    print(f"Epoch {epoch:3d}, Train: {train_loss:.6f}, LR: {current_lr:.2e}")
+                    logger.info(f"Epoch {epoch:3d}, Train: {train_loss:.6f}, LR: {current_lr:.2e}")
 
             metric = val_loss if (use_val and val_loss is not None and not np.isnan(val_loss)) else train_loss
             if metric < best - min_delta:
@@ -315,17 +427,68 @@ class TransformerImputer(nn.Module):
                 patience_counter += 1
 
             if patience_counter >= patience:
-                print(f"Ucenje se je predcasno ustavilo pri epohi {epoch} (najnizja izguba: {best:.6f})")
+                logger.info(f"Ucenje se je predcasno ustavilo pri epohi {epoch} (najnizja izguba: {best:.6f})")
                 break
 
-        print(f"Ucenje zakljuceno. Koncna vrednost izgube: {best:.6f}")
+        logger.info(f"Ucenje zakljuceno. Koncna vrednost izgube: {best:.6f}")
         return {
             "best_loss": float(best) if np.isfinite(best) else None,
             "stopped_epoch": int(last_epoch),
         }
 
-    def _validate_imputation(self, validation_data):
+    def fit(
+        self,
+        dataset: ImputationDatasetDict,
+        epochs: int = 300,
+        batch_size: int = 128,
+        initial_lr: float | None = None,
+        patience: int = 250,
+        min_delta: float = 0.0,
+        validation_data: ValidationDatasetDict | None = None,
+    ) -> FitStatsDict:
+        device = self._setup_device()
+        self.to(device)
+        cfg = self.config
+
+        compiled_model = maybe_compile_model(self, cfg, device)
+        configure_cuda_runtime(device)
+
+        amp = device.type == "cuda"
+        scaler = torch.GradScaler(device.type, enabled=amp)
+
+        optimizer = self._build_optimizer(device, initial_lr)
+        scheduler = self._build_scheduler(optimizer, epochs)
+        loader = self._build_dataloader(dataset, batch_size, device)
+
+        never_mask_indices = dataset.get("never_mask_feature_indices")
+        grad_clip_norm = float(cfg.grad_clip_norm)
+        ort_weight = float(cfg.ORT_weight)
+        mit_weight = float(cfg.MIT_weight)
+
+        fit_stats = self._train_loop(
+            compiled_model=compiled_model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            loader=loader,
+            device=device,
+            amp=amp,
+            scaler=scaler,
+            epochs=epochs,
+            patience=patience,
+            min_delta=min_delta,
+            validation_data=validation_data,
+            grad_clip_norm=grad_clip_norm,
+            ort_weight=ort_weight,
+            mit_weight=mit_weight,
+            never_mask_indices=never_mask_indices,
+        )
+
+        return fit_stats
+
+    def _validate_imputation(self, validation_data: ValidationDatasetDict | None) -> float | None:
         try:
+            if validation_data is None:
+                return np.nan
             x_val_masked = validation_data["X"]
             x_val_ori = validation_data["X_ori"]
             if x_val_masked is None or x_val_ori is None:
@@ -336,7 +499,7 @@ class TransformerImputer(nn.Module):
             if not missing_mask.any():
                 return np.nan
 
-            dataset_masked = {"X": x_val_masked}
+            dataset_masked: ImputationDatasetDict = {"X": x_val_masked, "never_mask_feature_indices": None}
 
             self.eval()
             with torch.no_grad():
@@ -352,16 +515,18 @@ class TransformerImputer(nn.Module):
                     return np.nan
                 return mae
         except Exception as exc:
-            print(f"Validacija imputacije ni uspela: {exc}")
+            logger.warning(f"Validacija imputacije ni uspela: {exc}")
             return np.nan
         finally:
             self.train()
 
-    def impute(self, dataset):
+    def impute(self, dataset: ImputationDatasetDict) -> np.ndarray | None:
         try:
             self.eval()
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self.to(device)
+            try:
+                device = next(self.parameters()).device
+            except StopIteration:
+                device = torch.device("cpu")
 
             x = dataset["X"]
             if x is None or len(x) == 0:
@@ -385,9 +550,29 @@ class TransformerImputer(nn.Module):
                 result = x_input.clone()
                 result[missing_mask] = predictions[missing_mask]
                 if torch.isnan(result).any():
-                    print("NaN vrednosti v rezultatu zapolnjevanja")
+                    logger.warning("NaN vrednosti v rezultatu zapolnjevanja")
                     return None
                 return result.cpu().numpy()
         except Exception as exc:
-            print(f"Napaka pri zapolnjevanju manjkajocih vrednosti: {exc}")
+            logger.warning(f"Napaka pri zapolnjevanju manjkajocih vrednosti: {exc}")
             return None
+
+    def state_dict(self) -> dict[str, torch.Tensor]:
+        """Return model state for serialization."""
+        return super().state_dict()
+
+    def load_state_dict(self, state_dict: dict[str, torch.Tensor]) -> None:
+        """Load model state from a dictionary (backwards-compatible for older checkpoints)."""
+        incompatible = super().load_state_dict(state_dict, strict=False)
+        unexpected = list(incompatible.unexpected_keys)
+        missing = list(incompatible.missing_keys)
+        if unexpected:
+            raise RuntimeError(f"Unexpected keys in state_dict: {unexpected}")
+        allowed_missing = {
+            "gate_proj.weight",
+            "gate_proj.bias",
+            "missing_value",
+        }
+        extra_missing = [k for k in missing if k not in allowed_missing]
+        if extra_missing:
+            raise RuntimeError(f"Missing required keys in state_dict: {extra_missing}")

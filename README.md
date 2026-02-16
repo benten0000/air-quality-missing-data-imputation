@@ -50,6 +50,23 @@ Opomba: SAITS trenutno podpira samo `training.train_mask.saits.mode: random` (MC
 pip install -e .
 ```
 
+### 1b) SAITS benchmark dataseti (arXiv:2202.08516v5)
+
+SAITS paper uporablja 4 datasete in specifičen preprocessing (Section 4.1). Ta repo zdaj podpira enake split/window
+nastavitve preko `dataset.definitions.<name>.split` in `dataset.definitions.<name>.window` v `configs/pipeline/params.yaml`.
+
+- `PhysioNet-2012`: 37 featurejev, 48 korakov (1h bin), random split 80/20 + 20% val iz train
+- `Air-Quality` (Beijing multi-site): 132 featurejev (12 site x 11), 24 korakov (1h), date-range split
+- `Electricity`: 370 featurejev, 100 korakov (15-min), date-range split
+- `ETT`: 7 featurejev, 24 korakov (15-min), date-range split, sliding step 12
+
+CSV-ji so v repozitoriju pripravljeni v:
+
+- `data/datasets/beijing_air_quality/raw/combined.csv`
+- `data/datasets/electricity/raw/electricity.csv`
+- `data/datasets/ett/raw/ett.csv`
+- `data/datasets/physionet2012/raw/physionet2012.csv`
+
 ### 2) Lokalni zagon pipeline-a
 
 ```bash
@@ -80,20 +97,12 @@ dvc plots show
 ### 6) Dataset switch v enem `params.yaml`
 
 Dataset se zdaj izbira v YAML preko `experiment.dataset`.
-`prepare_data` za loader `npz` najprej poišče/ustvari NPZ in ga potem materializira v enoten CSV vhod za preostali pipeline.
+`prepare_data` uporablja izključno CSV datasete (brez NPZ adapterja).  
+Feature-ji se privzeto inferajo iz CSV in uporabijo se vsi stolpci razen `datetime`/`station`/`series_id`.
 
 Skupna struktura map:
 
-- `data/datasets/<dataset>/npz/`
-- `data/datasets/<dataset>/materialized/`
-- `data/datasets/<dataset>/cache/`
-- `data/datasets/<dataset>/raw/` (opcijsko, če želiš tudi CSV izvoz)
-
-Primer za Electricity NPZ (opcijsko, ker ga `prepare_data` lahko tudi sam ustvari iz `dataset.definitions.<name>.ensure`):
-
-```bash
-aqi-download-electricity --output-npz data/datasets/electricity/npz/electricity.npz --skip-csv --n-clients 16 --resample-frequency 1h
-```
+- `data/datasets/<dataset>/raw/`
 
 Potem zaženi isti `params.yaml` z override-i:
 
@@ -114,7 +123,7 @@ experiment:
 
 ### 7) Beijing PRSA (multi-site)
 
-Dataset `beijing_air_quality` je v `data/datasets/beijing_air_quality/materialized/*.csv` (12 postaj).
+Dataset `beijing_air_quality` je v `data/datasets/beijing_air_quality/raw/combined.csv` (12 postaj v “wide” formatu).
 
 Če želiš SAITS-style “wide” format (postaje kot del feature dimenzije), uporabi postajo `combined`:
 
@@ -190,4 +199,3 @@ Generirani artefakti:
 - `aqi-prepare`
 - `aqi-train-models`
 - `aqi-evaluate-models`
-- `aqi-download-electricity`

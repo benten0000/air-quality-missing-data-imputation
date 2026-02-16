@@ -37,3 +37,10 @@ evaluate_imputer.log
 .ipynb_checkpoints/
 __MACOSX/
 .DS_Store
+
+# Local dataset sources (kept out of git; materialize into data/datasets/* instead)
+2202.08516v5.pdf
+ETDataset-main.zip
+pems+sf.zip
+*:Zone.Identifier
+
