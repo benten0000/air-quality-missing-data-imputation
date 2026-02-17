@@ -171,6 +171,8 @@ def run(cfg: DictConfig) -> None:
                 block_size=block_size,
                 runtime_params=runtime_params,
             )
+            total_params: int | None = None
+            trainable_params: int | None = None
             if model_name == "transformer":
                 total_params, trainable_params = _count_parameters(model)
                 logger.logger.info(
@@ -184,7 +186,7 @@ def run(cfg: DictConfig) -> None:
                 tracker.log_params(train_mask, prefix="training.train_mask")
                 tracker.log_params(to_plain_dict(model_cfg), prefix=f"models.{model_name}")
                 runtime_logged = {"n_features": n_features, "block_size": block_size, "windows": str(windows_path)}
-                if model_name == "transformer":
+                if total_params is not None and trainable_params is not None:
                     runtime_logged["model_params_total"] = total_params
                     runtime_logged["model_params_trainable"] = trainable_params
                 tracker.log_params(runtime_logged, prefix="runtime")
